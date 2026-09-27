@@ -2940,17 +2940,39 @@ function sharePost(postId) {
 // 23. CREATE POST — v7.0
 // ====================================================================
 async function createPost(text, mediaFile, isSpecial, specialData) {
+    // ✅ v9.0: Anti duplikat — cek apakah sedang proses
+    if (window._salinkPostingInProgress) {
+        console.log('⚠️ [createPost] Posting sudah berjalan, skip duplikat');
+        showToast('⏳ Tunggu', 'Postingan sedang diproses...', 'fa-spinner');
+        return;
+    }
+
     if (isPreviewMode) { showPreviewOverlay(); return; }
     if (!currentUser) { redirectToLogin(); return; }
 
-    const hasText = text && text.trim() !== '';
-    const hasMedia = mediaFile && mediaFile.size > 0;
-
-    if (isSpecial) {
-        if (!hasText) { showToast('⚠️ Pesan kosong', 'Postingan khusus wajib isi pesan notifikasi', 'fa-exclamation-triangle'); return; }
-    } else {
-        if (!hasText && !hasMedia) { showToast('⚠️ Postingan kosong', 'Isi teks atau upload foto/video', 'fa-exclamation-triangle'); return; }
+    // ✅ v9.0: Set flag & disable tombol
+    window._salinkPostingInProgress = true;
+    const submitBtn = document.getElementById('postSubmit');
+    if (submitBtn) {
+        submitBtn.disabled = true;
+        submitBtn.innerHTML = '<i class="fas fa-spinner fa-spin"></i> Posting...';
     }
+
+    try {
+        const hasText = text && text.trim() !== '';
+        const hasMedia = mediaFile && mediaFile.size > 0;
+
+        if (isSpecial) {
+            if (!hasText) { 
+                showToast('⚠️ Pesan kosong', 'Postingan khusus wajib isi pesan notifikasi', 'fa-exclamation-triangle'); 
+                return;
+            }
+        } else {
+            if (!hasText && !hasMedia) { 
+                showToast('⚠️ Postingan kosong', 'Isi teks atau upload foto/video', 'fa-exclamation-triangle'); 
+                return;
+            }
+        }
 
     const uniqueId = 'content-' + Date.now() + '-' + Math.random().toString(36).substring(2, 10);
     const postId = uniqueId;
@@ -3130,8 +3152,19 @@ function cleanupOldMedia() {
     } catch(e) {
         console.error('❌ cleanupOldMedia error:', e.message);
     }
+       } finally {
+        // ✅ v9.0: Reset flag setelah selesai (sukses/gagal)
+        window._salinkPostingInProgress = false;
+        const btn = document.getElementById('postSubmit');
+        if (btn) {
+            btn.disabled = true; // Tetap disabled karena form sudah kosong
+            btn.textContent = 'Posting';
+        }
+        console.log('✅ [createPost] Flag reset, siap posting lagi');
+    } 
+  }
 }
-
+        
 // ====================================================================
 // 24. TRIGGER LOCAL EMERGENCY VISUAL
 // ====================================================================
@@ -4295,36 +4328,56 @@ function setupPostInput() {
     }
 
     if (submitBtn && !submitBtn._salinkPostSetup) {
-        submitBtn._salinkPostSetup = true;
-        submitBtn.addEventListener('click', async function(e) {
-            e.preventDefault(); e.stopPropagation();
-            if (isPreviewMode) { showPreviewOverlay(); return; }
-            if (!currentUser) { redirectToLogin(); return; }
-            const val = document.getElementById('postTypeSelect') ? document.getElementById('postTypeSelect').value : 'biasa';
-            const mapping = POST_TYPE_MAP[val] || POST_TYPE_MAP['biasa'];
-            const isSpecial = mapping.isSpecial;
-            const specialType = mapping.specialType;
-            const text = isSpecial ? (document.getElementById('postSpecialText') ? document.getElementById('postSpecialText').value.trim() : '') : (document.getElementById('postInput') ? document.getElementById('postInput').value.trim() : '');
-            const fileEl = document.getElementById('mediaUpload');
-            const file = fileEl && fileEl.files ? fileEl.files[0] : null;
-            if (!text && !file) { showToast('⚠️ Perhatian', 'Isi teks atau upload media', 'fa-exclamation-triangle'); return; }
-            let specialData = null;
-            if (isSpecial) {
-                if (!currentGpsData) { showToast('⚠️ Perhatian', 'Tekan "Ambil Lokasi Saya" dulu', 'fa-exclamation-triangle'); return; }
-                specialData = {
-                    type: specialType,
-                    location: currentGpsData.address || ('Koordinat: ' + currentGpsData.lat + ', ' + currentGpsData.lng),
-                    address: currentGpsData.address,
-                    latitude: currentGpsData.lat,
-                    longitude: currentGpsData.lng,
-                    mapsURL: currentGpsData.mapsURL,
-                    coords: currentGpsData.lat + ', ' + currentGpsData.lng
-                };
+    submitBtn._salinkPostSetup = true;
+    submitBtn.addEventListener('click', async function(e) {
+        e.preventDefault(); 
+        e.stopPropagation();
+        
+        // ✅ v9.0: Cek flag anti-duplikat
+        if (window._salinkPostingInProgress) {
+            console.log('⚠️ [submitBtn] Posting sedang berjalan, skip');
+            return;
+        }
+        
+        if (isPreviewMode) { showPreviewOverlay(); return; }
+        if (!currentUser) { redirectToLogin(); return; }
+        
+        const val = document.getElementById('postTypeSelect') ? document.getElementById('postTypeSelect').value : 'biasa';
+        const mapping = POST_TYPE_MAP[val] || POST_TYPE_MAP['biasa'];
+        const isSpecial = mapping.isSpecial;
+        const specialType = mapping.specialType;
+        const text = isSpecial 
+            ? (document.getElementById('postSpecialText') ? document.getElementById('postSpecialText').value.trim() : '') 
+            : (document.getElementById('postInput') ? document.getElementById('postInput').value.trim() : '');
+        const fileEl = document.getElementById('mediaUpload');
+        const file = fileEl && fileEl.files ? fileEl.files[0] : null;
+        
+        if (!text && !file) { 
+            showToast('⚠️ Perhatian', 'Isi teks atau upload media', 'fa-exclamation-triangle'); 
+            return; 
+        }
+        
+        let specialData = null;
+        if (isSpecial) {
+            if (!currentGpsData) { 
+                showToast('⚠️ Perhatian', 'Tekan "Ambil Lokasi Saya" dulu', 'fa-exclamation-triangle'); 
+                return; 
             }
-            await createPost(text, file, isSpecial, specialData);
-        });
-        console.log('✅ [setupPostInput] Submit handler attached');
-    }
+            specialData = {
+                type: specialType,
+                location: currentGpsData.address || ('Koordinat: ' + currentGpsData.lat + ', ' + currentGpsData.lng),
+                address: currentGpsData.address,
+                latitude: currentGpsData.lat,
+                longitude: currentGpsData.lng,
+                mapsURL: currentGpsData.mapsURL,
+                coords: currentGpsData.lat + ', ' + currentGpsData.lng
+            };
+        }
+        
+        await createPost(text, file, isSpecial, specialData);
+    });
+    console.log('✅ [setupPostInput] Submit handler attached');
+}
     validatePost();
 }
 function validatePost() {
@@ -4332,15 +4385,31 @@ function validatePost() {
     const val = selectEl ? selectEl.value : 'biasa';
     const mapping = POST_TYPE_MAP[val] || POST_TYPE_MAP['biasa'];
     const isSpecial = mapping.isSpecial;
-    const text = isSpecial ? (document.getElementById('postSpecialText') ? document.getElementById('postSpecialText').value.trim() : '') : (document.getElementById('postInput') ? document.getElementById('postInput').value.trim() : '');
+    const text = isSpecial 
+        ? (document.getElementById('postSpecialText') ? document.getElementById('postSpecialText').value.trim() : '') 
+        : (document.getElementById('postInput') ? document.getElementById('postInput').value.trim() : '');
     const mediaInput = document.getElementById('mediaUpload');
     const hasFile = mediaInput && mediaInput.files && mediaInput.files.length > 0;
     const btn = document.getElementById('postSubmit');
+    
     if (!btn) return;
-    if (isPreviewMode) { btn.disabled = true; return; }
+    
+    // ✅ v9.0: Kalau sedang posting, tetap disabled
+    if (window._salinkPostingInProgress) {
+        btn.disabled = true;
+        return;
+    }
+    
+    if (isPreviewMode) { 
+        btn.disabled = true; 
+        return; 
+    }
+    
     if (isSpecial) {
         btn.disabled = !((text || hasFile) && currentGpsData);
-    } else btn.disabled = !(text || hasFile);
+    } else {
+        btn.disabled = !(text || hasFile);
+    }
 }
 
 // ====================================================================
