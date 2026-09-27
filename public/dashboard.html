@@ -1193,18 +1193,20 @@
             </div>
         </div>
     </div>
-
-        <script>
+    <script>
 /* ====================================================================
- * SALINK DASHBOARD v6.0 — GOOGLE DRIVE INTEGRATION
+ * SALINK DASHBOARD v6.1 — GOOGLE DRIVE FIX INTEGRATION 
  * ====================================================================
- * FITUR:
- * ✅ 5 PATCH LAMA (safeSavePosts, setupPostInput, applyPreviewMode,
- *    getStorageUsage, auto-cleanup)
- * ✅ 8 PATCH BARU (Google Drive upload & view-only)
+ * PERBAIKAN v6.1:
+ * ✅ FIX #1: Disable auto-preload audio (tidak bunyi otomatis)
+ * ✅ FIX #2: Ganti scope ke 'drive' (bisa akses folder manual)
+ * ✅ FIX #3: Tambah error logging & UI feedback untuk upload
+ * ✅ FIX #4: Disable auto-trigger dari salink-emergency.js
+ * ✅ FIX #5: Retry logic untuk token expired
  *
  * Client ID : 477566648959-32hl34krtgob7k5a2usestsg17fmv5gf.apps.googleusercontent.com
  * Folder ID : 1XIfWFwO20ehK6_R3SG2echVkevugpm9w
+ * Email     : teslasmartonlineshop@gmail.com
  * ==================================================================== */
 
 // ====================================================================
@@ -1279,13 +1281,18 @@ let _audioContext = null;
 let _audioUnlocked = false;
 let sentInvites = JSON.parse(localStorage.getItem('salink_sent_invites') || '{}');
 
+// ✅ FIX #1: Flag untuk mencegah auto-trigger dari script eksternal
+window._salinkAlarmInitialized = false;
+window._salinkAllowAutoTrigger = false;
+
 // ====================================================================
 // 🌐 GOOGLE DRIVE CONFIG
 // ====================================================================
 const GDRIVE_CONFIG = {
     CLIENT_ID: '477566648959-32hl34krtgob7k5a2usestsg17fmv5gf.apps.googleusercontent.com',
     FOLDER_ID: '1XIfWFwO20ehK6_R3SG2echVkevugpm9w',
-    SCOPES: 'https://www.googleapis.com/auth/drive.file',
+    // ✅ FIX #2: Ganti scope ke 'drive' (bisa akses folder manual)
+    SCOPES: 'https://www.googleapis.com/auth/drive',
     DISCOVERY_DOCS: ['https://www.googleapis.com/discovery/v1/apis/drive/v3/rest']
 };
 
@@ -1318,27 +1325,10 @@ function unlockAudio() {
     document.addEventListener(evt, unlockAudio, { once: true, passive: true });
 });
 
+// ✅ FIX #1: TIDAK auto-preload audio (biar tidak bunyi otomatis)
 function preloadAllAudio() {
-    console.log('🔊 [Audio] Preloading...');
-    Object.keys(EMERGENCY_AUDIO).forEach(type => {
-        try {
-            const audio = new Audio();
-            audio.preload = 'auto';
-            audio.src = EMERGENCY_AUDIO[type];
-            audio.volume = 1.0;
-            audio.load();
-            audioCache[type] = audio;
-        } catch(e) {}
-    });
-    try {
-        const regAudio = new Audio();
-        regAudio.preload = 'auto';
-        regAudio.src = REGULAR_SOUND_URL;
-        regAudio.volume = 1.0;
-        regAudio.load();
-        audioCache['regular'] = regAudio;
-    } catch(e) {}
-    console.log('✅ [Audio] Preloaded');
+    console.log('🔊 [Audio] Ready (tidak preload otomatis)');
+    // Tidak preload — audio dimuat saat benar-benar diputar
 }
 
 function playRegularSound() {
@@ -1349,17 +1339,7 @@ function playRegularSound() {
     }
     try {
         unlockAudio();
-        const cached = audioCache['regular'];
-        if (cached) {
-            cached.currentTime = 0;
-            cached.volume = 1.0;
-            const p = cached.play();
-            if (p !== undefined) p.catch(() => {
-                try { new Audio(REGULAR_SOUND_URL).play().catch(() => {}); } catch(e) {}
-            });
-        } else {
-            new Audio(REGULAR_SOUND_URL).play().catch(() => {});
-        }
+        new Audio(REGULAR_SOUND_URL).play().catch(() => {});
     } catch(e) { console.warn('playRegularSound:', e.message); }
 }
 
@@ -1388,7 +1368,7 @@ function setupIdleDetection() {
 }
 
 // ====================================================================
-// 5. FULL SCREEN ALARM (Legacy fallback)
+// 5. FULL SCREEN ALARM
 // ====================================================================
 function showFullScreenAlarm(em) {
     if (typeof SalinkEmergency !== 'undefined' && SalinkEmergency &&
@@ -1484,7 +1464,6 @@ function adaptPost(p) {
         userGender: p.userGender || 'male', userProfilePic: p.userProfilePic || '',
         text: p.text || '', mediaType: p.mediaType || '', mediaData: p.mediaData || '',
         mediaId: p.mediaId || '', mediaThumbnail: p.mediaThumbnail || '',
-        // ✅ Google Drive fields
         gdriveId: p.gdriveId || '',
         gdriveImageUrl: p.gdriveImageUrl || '',
         gdriveVideoEmbed: p.gdriveVideoEmbed || '',
@@ -1674,6 +1653,11 @@ function showFloatingEmergency(em) {
 // ====================================================================
 function triggerEmergencyFromNotification(notif) {
     if (isDismissed(notif.id)) return;
+    // ✅ FIX #4: Hanya trigger kalau diizinkan
+    if (!window._salinkAllowAutoTrigger) {
+        console.log('⏸️ [Emergency] Auto-trigger disabled, hanya tampil di hologram');
+        return;
+    }
     const em = {
         id: notif.id,
         type: notif.type,
@@ -1708,7 +1692,7 @@ function triggerEmergencyFromNotification(notif) {
 }
 
 // ====================================================================
-// 12. GPS: AMBIL LOKASI SAYA
+// 12. GPS
 // ====================================================================
 async function ambilLokasiSaya() {
     const btn = document.getElementById('gpsLocationBtn');
@@ -1762,7 +1746,7 @@ async function ambilLokasiSaya() {
             const nominatimUrl = `${NOMINATIM_URL}?format=json&lat=${lat}&lon=${lng}&zoom=18&addressdetails=1&accept-language=id`;
             const response = await fetch(nominatimUrl, {
                 method: 'GET',
-                headers: { 'User-Agent': 'SALINK-Emergency-App/6.0' }
+                headers: { 'User-Agent': 'SALINK-Emergency-App/6.1' }
             });
             if (response.ok) {
                 const data = await response.json();
@@ -1846,9 +1830,9 @@ function initGoogleDrive() {
     });
 }
 
-function requestGDriveToken() {
+function requestGDriveToken(forceNew) {
     return new Promise((resolve, reject) => {
-        if (gdriveAccessToken && Date.now() < gdriveTokenExpiresAt - 60000) {
+        if (!forceNew && gdriveAccessToken && Date.now() < gdriveTokenExpiresAt - 60000) {
             resolve(gdriveAccessToken);
             return;
         }
@@ -1870,27 +1854,41 @@ function requestGDriveToken() {
         };
 
         try {
-            gdriveTokenClient.requestAccessToken({ prompt: '' });
+            gdriveTokenClient.requestAccessToken({ prompt: forceNew ? 'consent' : '' });
         } catch (err) {
             reject(err);
         }
     });
 }
 
+// ✅ FIX #3: Upload dengan error logging detail
 async function uploadToGDrive(file) {
-    try {
-        const token = await requestGDriveToken();
+    console.log('📤 [GDrive] Starting upload:', file.name, '(' + (file.size / 1024).toFixed(1) + ' KB)');
 
+    try {
+        // Step 1: Dapatkan token
+        console.log('🔑 [GDrive] Step 1: Request token...');
+        let token;
+        try {
+            token = await requestGDriveToken();
+        } catch (err) {
+            console.warn('⚠️ [GDrive] Token expired, retry with consent...');
+            token = await requestGDriveToken(true);
+        }
+        console.log('✅ [GDrive] Token OK');
+
+        // Step 2: Build metadata
         const metadata = {
             name: 'SALINK_' + Date.now() + '_' + file.name,
             mimeType: file.type,
             parents: [GDRIVE_CONFIG.FOLDER_ID]
         };
+        console.log('📋 [GDrive] Metadata:', metadata);
 
+        // Step 3: Build multipart body
         const boundary = '-------314159265358979323846';
         const delimiter = "\r\n--" + boundary + "\r\n";
         const close_delim = "\r\n--" + boundary + "--";
-
         const metadataStr = JSON.stringify(metadata);
         const fileBuffer = await file.arrayBuffer();
 
@@ -1906,6 +1904,8 @@ async function uploadToGDrive(file) {
         const bodyTail = new Blob([close_delim], { type: 'text/plain' });
         const body = new Blob([bodyHead, fileBuffer, bodyTail]);
 
+        // Step 4: Upload
+        console.log('📡 [GDrive] Step 4: Uploading to Drive...');
         const response = await fetch('https://www.googleapis.com/upload/drive/v3/files?uploadType=multipart&fields=id,name,webViewLink,webContentLink,thumbnailLink', {
             method: 'POST',
             headers: {
@@ -1915,14 +1915,26 @@ async function uploadToGDrive(file) {
             body: body
         });
 
+        console.log('📡 [GDrive] Response status:', response.status);
+
         if (!response.ok) {
             const errText = await response.text();
-            throw new Error('Upload failed: ' + response.status + ' — ' + errText);
+            console.error('❌ [GDrive] Upload failed:', response.status, errText);
+
+            // Coba parse error JSON
+            let errDetail = errText;
+            try {
+                const errJson = JSON.parse(errText);
+                errDetail = errJson.error ? errJson.error.message : errText;
+            } catch(e) {}
+
+            throw new Error('HTTP ' + response.status + ': ' + errDetail);
         }
 
         const result = await response.json();
-        console.log('✅ [GDrive] Upload success:', result.id);
+        console.log('✅ [GDrive] Upload success:', result);
 
+        // Step 5: Set permission
         await setViewOnlyPermission(result.id, token);
 
         return {
@@ -1936,7 +1948,7 @@ async function uploadToGDrive(file) {
             videoEmbed: 'https://drive.google.com/file/d/' + result.id + '/preview'
         };
     } catch (err) {
-        console.error('❌ [GDrive] Upload error:', err);
+        console.error('❌ [GDrive] Upload error DETAIL:', err);
         throw err;
     }
 }
@@ -2186,7 +2198,7 @@ function loadPostsFromStorage() {
 }
 
 // ====================================================================
-// 16. ✅ HELPER: safeSavePosts + getMediaFromStore
+// 16. HELPER: safeSavePosts + getMediaFromStore
 // ====================================================================
 function safeSavePosts(postsArray) {
     try {
@@ -2230,10 +2242,8 @@ function getMediaFromStore(mediaId, fallbackData) {
     return fallbackData || '';
 }
 
-// Helper: get media URL dari post (GDrive prioritas, fallback lokal)
 function getMediaUrlFromPost(post) {
     if (!post) return '';
-    // Prioritas 1: Google Drive
     if (post.gdriveId) {
         if (post.mediaType === 'image') {
             return post.gdriveImageUrl || ('https://lh3.googleusercontent.com/d/' + post.gdriveId + '=w1000');
@@ -2241,7 +2251,6 @@ function getMediaUrlFromPost(post) {
             return post.gdriveVideoEmbed || ('https://drive.google.com/file/d/' + post.gdriveId + '/preview');
         }
     }
-    // Prioritas 2: local media store
     if (post.mediaId) {
         return getMediaFromStore(post.mediaId, post.mediaData);
     }
@@ -2277,7 +2286,6 @@ async function confirmDeleteNow() {
     showSyncIndicator();
     try {
         if (type === 'post' || type === 'emergency') {
-            // Cari post untuk dapat gdriveId
             const postToDelete = posts.find(p => p.id === id);
             if (postToDelete && postToDelete.gdriveId) {
                 try { await deleteFromGDrive(postToDelete.gdriveId); } catch(e) {}
@@ -2495,7 +2503,6 @@ function renderPosts() {
         const profilePic = post.userProfilePic ? '<img src="' + escapeAttr(post.userProfilePic) + '" alt="">' : (post.userGender === 'female' ? '<i class="fas fa-female"></i>' : '<i class="fas fa-male"></i>');
         const specialBadge = post.isSpecial && post.specialType ? '<span style="background:rgba(88,166,255,0.15);padding:2px 8px;border-radius:10px;font-size:0.5rem;color:var(--accent-blue);margin-left:6px;">' + EMERGENCY_ICONS[post.specialType] + ' ' + EMERGENCY_LABELS[post.specialType] + '</span>' : '';
 
-        // ✅ Google Drive media (prioritas) atau lokal (fallback)
         let mediaHTML = '';
         if (post.mediaType) {
             const isGDrive = !!post.gdriveId;
@@ -2641,7 +2648,6 @@ function renderFullPostCard(p, isExpired) {
     const detailLink = 'detail-emergency.html?id=' + encodeURIComponent(p.id);
     const isOwner = currentUser && p.userId === currentUser.username;
 
-    // ✅ Google Drive media (prioritas) atau lokal (fallback)
     let mediaBlock = '';
     if (p.mediaType) {
         const isGDrive = !!p.gdriveId;
@@ -2804,7 +2810,7 @@ function sharePost(postId) {
 }
 
 // ====================================================================
-// 23. CREATE POST — WITH GOOGLE DRIVE UPLOAD
+// 23. CREATE POST
 // ====================================================================
 async function createPost(text, mediaFile, isSpecial, specialData) {
     if (isPreviewMode) { showPreviewOverlay(); return; }
@@ -2830,24 +2836,22 @@ async function createPost(text, mediaFile, isSpecial, specialData) {
     let mediaDataLocal = '';
     let mediaIdLocal = '';
 
-    // ============================================================
-    // STEP 1: UPLOAD KE GOOGLE DRIVE (kalau ada media)
-    // ============================================================
+    // ✅ FIX #3: Upload ke Google Drive dengan UI feedback jelas
     if (hasMedia) {
         const isImage = mediaFile.type.indexOf('image/') === 0;
         const isVideo = mediaFile.type.indexOf('video/') === 0;
         mediaType = isImage ? 'image' : (isVideo ? 'video' : '');
 
-        showToast('📤 Upload...', 'Mengirim media ke Google Drive', 'fa-cloud-upload-alt');
+        showToast('📤 Upload...', 'Mengirim media ke Google Drive...', 'fa-cloud-upload-alt');
 
         try {
-            console.log('📤 [createPost] Uploading to Google Drive...', mediaFile.name, mediaFile.size, 'bytes');
+            console.log('📤 [createPost] Uploading to Google Drive...');
             gdriveData = await uploadToGDrive(mediaFile);
             console.log('✅ [createPost] GDrive upload success:', gdriveData.id);
             showToast('✅ Upload Berhasil', 'Media tersimpan di Google Drive', 'fa-check-circle');
         } catch (err) {
-            console.warn('⚠️ [createPost] GDrive upload gagal, fallback ke lokal:', err.message);
-            showToast('⚠️ GDrive gagal', 'Menyimpan media di perangkat...', 'fa-exclamation-triangle');
+            console.error('❌ [createPost] GDrive upload gagal:', err.message);
+            showToast('⚠️ GDrive Gagal', 'Error: ' + err.message + '. Media disimpan lokal.', 'fa-exclamation-triangle');
 
             // Fallback: simpan ke localStorage
             mediaDataLocal = await new Promise((resolve) => {
@@ -2872,9 +2876,7 @@ async function createPost(text, mediaFile, isSpecial, specialData) {
         }
     }
 
-    // ============================================================
-    // STEP 2: SIMPAN METADATA KE SALINK_POSTS
-    // ============================================================
+    // Simpan post
     const post = {
         id: postId,
         userId: currentUser.username,
@@ -2915,9 +2917,7 @@ async function createPost(text, mediaFile, isSpecial, specialData) {
 
     apiSavePost(post).then(ok => { if (ok) console.log('✅ [createPost] Post saved:', postId); });
 
-    // ============================================================
-    // STEP 3: KALAU EMERGENCY, SIMPAN JUGA KE EMERGENCY & NOTIF
-    // ============================================================
+    // Emergency handling
     if (isSpecial && specialData) {
         const emPayload = {
             id: emergencyId,
@@ -2994,7 +2994,6 @@ async function createPost(text, mediaFile, isSpecial, specialData) {
     }
 }
 
-// ✅ Helper: Cleanup media lama
 function cleanupOldMedia() {
     try {
         const mediaStore = JSON.parse(localStorage.getItem('salink_post_media') || '{}');
@@ -3509,6 +3508,9 @@ function handleEmergencyClick(e) {
 
     if (typeof unlockAudio === 'function') unlockAudio();
 
+    // ✅ FIX #4: Izinkan auto-trigger HANYA setelah user klik grid
+    window._salinkAllowAutoTrigger = true;
+
     const hasSalinkEmergency = (typeof SalinkEmergency !== 'undefined' && SalinkEmergency);
 
     if (fullScreenAlarmActive) {
@@ -3747,10 +3749,9 @@ async function loadData() {
             }
         } catch(e) {}
 
-        const newEmergency = detectNewEmergencyNotifications(notifications);
-        if (newEmergency) {
-            setTimeout(() => triggerEmergencyFromNotification(newEmergency), 1500);
-        }
+        // ✅ FIX #4: JANGAN auto-trigger emergency saat pertama load
+        // Hanya tampilkan di hologram
+        console.log('ℹ️ [loadData] Auto-trigger disabled. Emergency hanya tampil di hologram.');
 
         renderPosts();
         renderHologram();
@@ -4079,11 +4080,6 @@ function setupVisibilityDetection() {
     document.addEventListener('visibilitychange', () => {
         if (!document.hidden) {
             resetIdleTimer();
-            const ems = getActiveEmergencies();
-            const undismissed = ems.find(e => !isDismissed(e.id) && !readNotifs[e.id]);
-            if (undismissed && !fullScreenAlarmActive) {
-                setTimeout(() => showFullScreenAlarm(undismissed), 500);
-            }
         } else {
             isIdleStandby = true;
         }
@@ -4158,7 +4154,6 @@ function setupPostInput() {
                 const f = this.files[0];
                 const isVideo = f.type.indexOf('video/') === 0;
                 const isImage = f.type.indexOf('image/') === 0;
-                // ✅ Limit lebih besar (GDrive upload, tidak terbatas localStorage)
                 let maxSize = isVideo ? 100 * 1024 * 1024 : (isImage ? 20 * 1024 * 1024 : 0);
                 if (!maxSize) { showToast('⚠️ Format tidak didukung', 'Hanya foto/video', 'fa-exclamation-triangle'); this.value = ''; validatePost(); return; }
                 if (f.size > maxSize) { showToast('⚠️ File terlalu besar', 'Max ' + (maxSize/1024/1024).toFixed(0) + 'MB', 'fa-exclamation-triangle'); this.value = ''; validatePost(); return; }
@@ -4270,7 +4265,6 @@ function showInstallPrompt() {
 // 38. VIEW-ONLY PROTECTION
 // ====================================================================
 function setupViewOnlyProtection() {
-    // Disable right-click pada gambar & video
     document.addEventListener('contextmenu', function(e) {
         if (e.target.tagName === 'IMG' || e.target.tagName === 'VIDEO' || e.target.tagName === 'IFRAME') {
             e.preventDefault();
@@ -4278,16 +4272,12 @@ function setupViewOnlyProtection() {
             return false;
         }
     });
-
-    // Disable drag pada gambar
     document.addEventListener('dragstart', function(e) {
         if (e.target.tagName === 'IMG') {
             e.preventDefault();
             return false;
         }
     });
-
-    // Disable Ctrl+S / Ctrl+P / Ctrl+U saat ada media
     document.addEventListener('keydown', function(e) {
         if (e.ctrlKey || e.metaKey) {
             if (['s', 'p', 'u'].indexOf(e.key.toLowerCase()) !== -1) {
@@ -4300,7 +4290,6 @@ function setupViewOnlyProtection() {
             }
         }
     });
-
     console.log('✅ [View-Only] Protection activated');
 }
 
@@ -4308,9 +4297,11 @@ function setupViewOnlyProtection() {
 // 39. INIT
 // ====================================================================
 document.addEventListener('DOMContentLoaded', async () => {
-    console.log('🚀 SALINK Dashboard v6.0 — Google Drive Integration');
+    console.log('🚀 SALINK Dashboard v6.1 — Google Drive FIXED');
 
-    preloadAllAudio();
+    // ✅ FIX #1: Jangan preload audio — biar tidak bunyi otomatis
+    // preloadAllAudio(); ← DINONAKTIFKAN
+
     setupIdleDetection();
     setupVisibilityDetection();
     setupPWA();
@@ -4390,7 +4381,6 @@ document.addEventListener('DOMContentLoaded', async () => {
         }
     });
 
-    // ✅ Init Google Drive
     try {
         await initGoogleDrive();
         console.log('✅ [Init] Google Drive ready');
@@ -4413,8 +4403,6 @@ document.addEventListener('DOMContentLoaded', async () => {
             const notifs = await apiGetNotifications();
             if (notifs && notifs.length > 0) {
                 notifications = notifs;
-                const newEmergency = detectNewEmergencyNotifications(notifications);
-                if (newEmergency) triggerEmergencyFromNotification(newEmergency);
                 updateNotifBadge();
             }
         } catch(e) {}
@@ -4434,7 +4422,6 @@ document.addEventListener('DOMContentLoaded', async () => {
         if (nm && nm.classList.contains('active')) renderNotifList();
     }, 15000);
 
-    // Auto-cleanup 30 detik
     setInterval(() => {
         try {
             const usage = getStorageUsage();
@@ -4459,9 +4446,8 @@ document.addEventListener('DOMContentLoaded', async () => {
         } catch(e) {}
     }, 30000);
 
-    console.log('✅ SALINK Dashboard v6.0 Ready!');
+    console.log('✅ SALINK Dashboard v6.1 Ready!');
 
-    // Cleanup media orphan
     setTimeout(() => {
         try {
             const mediaStore = JSON.parse(localStorage.getItem('salink_post_media') || '{}');
@@ -4728,21 +4714,7 @@ document.addEventListener('DOMContentLoaded', () => {
 });
 
 // ====================================================================
-// 41. DETECT NEW EMERGENCY NOTIFICATIONS
-// ====================================================================
-function detectNewEmergencyNotifications(notifs) {
-    if (!notifs || !notifs.length) return null;
-    let latest = null;
-    notifs.forEach(n => {
-        if (n.type && EMERGENCY_ICONS[n.type] && !isDismissed(n.id) && !readNotifs[n.id]) {
-            if (!latest || n.timestamp > latest.timestamp) latest = n;
-        }
-    });
-    return latest;
-}
-
-// ====================================================================
-// 42. EXPOSE GLOBAL
+// 41. EXPOSE GLOBAL
 // ====================================================================
 window.openProfileUser = openProfileUser;
 window.requestDelete = requestDelete;
@@ -4782,8 +4754,8 @@ window.ambilLokasiSaya = ambilLokasiSaya;
 window.uploadToGDrive = uploadToGDrive;
 window.deleteFromGDrive = deleteFromGDrive;
 
-console.log('✅ SALINK Dashboard v6.0 Script Loaded — Google Drive Integrated');
-    </script>
+console.log('✅ SALINK Dashboard v6.1 Script Loaded — Google Drive FIXED');
+    </script> 
 
     <!-- ============================================================ -->
     <!-- FCM SETUP SALINK + EMERGENCY ALERT                            -->
