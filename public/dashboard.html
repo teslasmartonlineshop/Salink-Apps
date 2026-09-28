@@ -1853,14 +1853,29 @@ async function uploadToGDrive(file, retryCount) {
         const bodyTail = new Blob([close_delim], { type: 'text/plain' });
         const body = new Blob([bodyHead, fileBuffer, bodyTail]);
 
-        const response = await fetch('https://www.googleapis.com/upload/drive/v3/files?uploadType=multipart&fields=id,name,webViewLink,webContentLink,thumbnailLink', {
-            method: 'POST',
-            headers: {
-                'Authorization': 'Bearer ' + token,
-                'Content-Type': 'multipart/related; boundary="' + boundary + '"'
-            },
-            body: body
-        });
+        // ✅ v10.1: FETCH DENGAN TIMEOUT 45 DETIK
+        const controller = new AbortController();
+        const fetchTimeout = setTimeout(() => controller.abort(), 45000);
+
+        let response;
+        try {
+            response = await fetch('https://www.googleapis.com/upload/drive/v3/files?uploadType=multipart&fields=id,name,webViewLink,webContentLink,thumbnailLink', {
+                method: 'POST',
+                headers: {
+                    'Authorization': 'Bearer ' + token,
+                    'Content-Type': 'multipart/related; boundary="' + boundary + '"'
+                },
+                body: body,
+                signal: controller.signal
+            });
+            clearTimeout(fetchTimeout);
+        } catch (fetchErr) {
+            clearTimeout(fetchTimeout);
+            if (fetchErr.name === 'AbortError') {
+                throw new Error('Upload timeout 45s — coba lagi atau file terlalu besar');
+            }
+            throw fetchErr;
+        }
 
         console.log('📡 [GDrive] Response status:', response.status);
 
@@ -2865,6 +2880,18 @@ async function createPost(text, mediaFile, isSpecial, specialData) {
         submitBtn.innerHTML = '<i class="fas fa-spinner fa-spin"></i> Posting...';
     }
 
+    // ✅ v10.1: TIMEOUT WAJIB — 60 detik max
+    const POSTING_TIMEOUT = 60000;
+    const timeoutId = setTimeout(() => {
+        console.warn('⚠️ [createPost] TIMEOUT 60s — Force reset');
+        window._salinkPostingInProgress = false;
+        if (submitBtn) {
+            submitBtn.disabled = true;
+            submitBtn.textContent = 'Posting';
+        }
+        showToast('⚠️ Timeout', 'Upload terlalu lama. Coba lagi.', 'fa-exclamation-triangle');
+    }, POSTING_TIMEOUT);
+
     try {
         const hasText = text && text.trim() !== '';
         const hasMedia = mediaFile && mediaFile.size > 0;
@@ -3024,13 +3051,18 @@ async function createPost(text, mediaFile, isSpecial, specialData) {
             const txt = document.getElementById('gpsLocationBtnText');
             if (txt) txt.textContent = '📍 Ambil Lokasi Saya';
         }
-    } finally {
+        } catch (err) {
+        console.error('❌ [createPost] Error:', err);
+        showToast('❌ Gagal', err.message || 'Gagal posting', 'fa-exclamation-triangle');
+        } finally {
+        // ✅ v10.1: SELALU reset flag + button (sukses/gagal/timeout)
+        clearTimeout(timeoutId);
         window._salinkPostingInProgress = false;
-        const btn = document.getElementById('postSubmit');
-        if (btn) {
-            btn.disabled = true;
-            btn.textContent = 'Posting';
+        if (submitBtn) {
+            submitBtn.disabled = true;
+            submitBtn.textContent = 'Posting';
         }
+        console.log('✅ [createPost] Complete — flag reset');
     }
 }
 
