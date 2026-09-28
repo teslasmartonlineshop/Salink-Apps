@@ -1193,27 +1193,22 @@
             </div>
         </div>
     </div>
-    <script>
+
+        <script>
 /* ====================================================================
- * SALINK DASHBOARD v6.1 — GOOGLE DRIVE FIX INTEGRATION 
+ * SALINK DASHBOARD v9.0 — FINAL CLEAN VERSION
  * ====================================================================
- 
-    <script>
-/* ====================================================================
- * SALINK DASHBOARD v7.0 — GOOGLE DRIVE FINAL FIX
- * ====================================================================
- * SEMUA PERBAIKAN TERINTEGRASI:
- * ✅ Fix URL gambar (drive.google.com/thumbnail — LEBIH STABIL)
- * ✅ Fix permission public (anyone reader)
- * ✅ Fix render dengan fallback URL (2 URL)
- * ✅ Fix alarm auto-trigger (tidak bunyi saat load)
- * ✅ Fix redirect URI mismatch
- * ✅ Fix safeSavePosts + getMediaFromStore
- * ✅ Fix setupPostInput tanpa cloneNode
- * ✅ Fix applyPreviewMode force validate
- * ✅ Fix getStorageUsage limit 5 MB
- * ✅ Fix auto-cleanup 30 detik
- *
+ * - Fix URL gambar Google Drive (thumbnail + fallback)
+ * - Fix permission public
+ * - Fix anti-duplikat posting (flag _salinkPostingInProgress)
+ * - Fix auto-refresh token Google Drive (retry)
+ * - Fix alarm tidak auto-bunyi saat load
+ * - Fix safeSavePosts (jangan hapus mediaData kalau ada gdriveId)
+ * - Fix setupPostInput (tanpa clone)
+ * - Fix validatePost (handle state)
+ * - Fix getStorageUsage (5 MB)
+ * - Fix auto-cleanup 30 detik
+ * 
  * Client ID : 477566648959-32hl34krtgob7k5a2usestsg17fmv5gf.apps.googleusercontent.com
  * Folder ID : 1XIfWFwO20ehK6_R3SG2echVkevugpm9w
  * Email     : teslasmartonlineshop@gmail.com
@@ -1229,26 +1224,16 @@ const DASHBOARD_URL = 'dashboard.html';
 const PROFILE_URL = 'profil.html';
 const DETAIL_URL = 'detail-emergency.html';
 const EMERGENCY_DURATION = 24 * 60 * 60 * 1000;
-const EMERGENCY_AUTO_DISMISS_MS = 5 * 60 * 1000;
-const EMERGENCY_VIBRATE_INTERVAL_MS = 2000;
 const EMERGENCY_POLL_INTERVAL = 15000;
 const AUTO_REFRESH = 60000;
 const EMERGENCY_CLEANUP_INTERVAL = 60000;
 const IDLE_THRESHOLD_MS = 30000;
-const SWIPE_MIN_DISTANCE = 50;
 const NOMINATIM_URL = 'https://nominatim.openstreetmap.org/reverse';
 
 const EMERGENCY_LABELS = { 'fire': '🔥 Kebakaran', 'medical': '🚑 Medis & Kematian', 'crime': '🚓 Kriminal', 'disaster': '🌪️ Bencana Alam' };
 const EMERGENCY_ICONS = { 'fire': '🔥', 'medical': '🚑', 'crime': '🚓', 'disaster': '🌪️' };
 const EMERGENCY_CSS_CLASS = { 'fire': 'fire', 'medical': 'medical', 'crime': 'crime', 'disaster': 'disaster' };
-const EMERGENCY_SHORT_LABELS = { 'fire': 'Kebakaran', 'medical': 'Medis & Kematian', 'crime': 'Kriminal', 'disaster': 'Bencana Alam' };
 
-const EMERGENCY_AUDIO = {
-    'fire':     '/Music/Kebakaran.mp3',
-    'medical':  '/Music/kematian.mp3',
-    'crime':    '/Music/pencurian.mp3',
-    'disaster': '/Music/bencana_tsunami.mp3'
-};
 const REGULAR_SOUND_URL = '/Music/smsblackber_4a537f155087133.mp3';
 
 const POST_TYPE_MAP = {
@@ -1271,11 +1256,7 @@ let deferredPrompt = null;
 let notifFilter = 'all';
 let readNotifs = {};
 let dismissedEmergencies = {};
-let activeOverlayEmergency = null;
-let emergencyVibrateInterval = null;
-let emergencyAudioLoop = null;
 let emergencyPollTimer = null;
-let lastNotifCheck = 0;
 let idleTimer = null;
 let isIdleStandby = false;
 let searchTab = 'all';
@@ -1285,15 +1266,12 @@ let recentSearches = JSON.parse(localStorage.getItem('salink_recent_searches') |
 const MAX_RECENT_SEARCHES = 8;
 let currentGpsData = null;
 let fullScreenAlarmActive = false;
-let fullScreenAlarmEmergency = null;
-let fullScreenAlarmVibrateTimer = null;
-const audioCache = {};
 let _audioContext = null;
 let _audioUnlocked = false;
 let sentInvites = JSON.parse(localStorage.getItem('salink_sent_invites') || '{}');
 
-// ✅ Flag anti auto-trigger
-window._salinkAlarmInitialized = false;
+// ✅ Flag anti-duplikat & anti auto-trigger
+window._salinkPostingInProgress = false;
 window._salinkAllowAutoTrigger = false;
 
 // ====================================================================
@@ -1325,7 +1303,6 @@ function unlockAudio() {
         source.start(0);
         if (_audioContext.state === 'suspended') _audioContext.resume().catch(() => {});
         _audioUnlocked = true;
-        console.log('🔓 [Audio] Unlocked');
     } catch(e) {
         console.warn('⚠️ [Audio] Unlock failed:', e.message);
     }
@@ -1335,21 +1312,11 @@ function unlockAudio() {
     document.addEventListener(evt, unlockAudio, { once: true, passive: true });
 });
 
-function preloadAllAudio() {
-    // ✅ Tidak preload — biar tidak bunyi otomatis
-    console.log('🔊 [Audio] Ready (tidak preload otomatis)');
-}
-
 function playRegularSound() {
-    if (typeof SalinkEmergency !== 'undefined' && SalinkEmergency &&
-        typeof SalinkEmergency.playRegular === 'function') {
-        SalinkEmergency.playRegular();
-        return;
-    }
     try {
         unlockAudio();
         new Audio(REGULAR_SOUND_URL).play().catch(() => {});
-    } catch(e) { console.warn('playRegularSound:', e.message); }
+    } catch(e) {}
 }
 
 // ====================================================================
@@ -1377,20 +1344,17 @@ function setupIdleDetection() {
 }
 
 // ====================================================================
-// 5. FULL SCREEN ALARM
+// 5. FULL SCREEN ALARM (delegasi ke SalinkEmergency)
 // ====================================================================
 function showFullScreenAlarm(em) {
-    if (typeof SalinkEmergency !== 'undefined' && SalinkEmergency &&
-        typeof SalinkEmergency.showAlarm === 'function') {
+    if (typeof SalinkEmergency !== 'undefined' && SalinkEmergency && typeof SalinkEmergency.showAlarm === 'function') {
         SalinkEmergency.showAlarm(em);
         return;
     }
-    console.warn('⚠️ SalinkEmergency tidak tersedia');
 }
 
 function dismissFullScreenAlarm(userAction) {
-    if (typeof SalinkEmergency !== 'undefined' && SalinkEmergency &&
-        typeof SalinkEmergency.dismissAlarm === 'function') {
+    if (typeof SalinkEmergency !== 'undefined' && SalinkEmergency && typeof SalinkEmergency.dismissAlarm === 'function') {
         SalinkEmergency.dismissAlarm(userAction);
         return;
     }
@@ -1420,10 +1384,10 @@ function loadDismissed() {
 function saveDismissed() {
     try { localStorage.setItem('salink_dismissed_emergencies', JSON.stringify(dismissedEmergencies)); } catch(e) {}
 }
-function isDismissed(emergencyId) { return dismissedEmergencies[emergencyId] !== undefined; }
-function dismissEmergency(emergencyId) {
-    if (!emergencyId) return;
-    dismissedEmergencies[emergencyId] = Date.now();
+function isDismissed(id) { return dismissedEmergencies[id] !== undefined; }
+function dismissEmergency(id) {
+    if (!id) return;
+    dismissedEmergencies[id] = Date.now();
     saveDismissed();
 }
 
@@ -1450,7 +1414,7 @@ function getActiveEmergencies() {
 // ====================================================================
 function adaptEmergency(em) {
     const ts = em.timestamp ? new Date(em.timestamp).getTime() : Date.now();
-    const coords = (em.latitude && em.longitude) ? `${em.latitude}, ${em.longitude}` : '';
+    const coords = (em.latitude && em.longitude) ? (em.latitude + ', ' + em.longitude) : '';
     return {
         id: em.id, type: em.type,
         sender: em.sender || em.senderUsername || 'Sistem',
@@ -1461,9 +1425,7 @@ function adaptEmergency(em) {
         mapsURL: em.mapsURL || '', mapEmbedURL: em.mapEmbedURL || '',
         coords: coords, latitude: em.latitude || '', longitude: em.longitude || '',
         timestamp: ts, expiresAt: ts + EMERGENCY_DURATION,
-        province: em.province || '', city: em.city || '', district: em.district || '', village: em.village || '',
-        status: em.status || 'active',
-        mediaType: em.mediaType || '', mediaData: em.mediaData || '', imagesArray: em.imagesArray || []
+        status: em.status || 'active'
     };
 }
 function adaptPost(p) {
@@ -1588,9 +1550,8 @@ function getActiveEmergencyCountByType() {
 // ====================================================================
 // 10. TOAST & FLOATING NOTIFICATION
 // ====================================================================
-function showToast(title, message, icon, type) {
+function showToast(title, message, icon) {
     icon = icon || 'fa-info-circle';
-    type = type || 'info';
     document.querySelectorAll('.toast').forEach(t => t.remove());
     const container = document.getElementById('toastContainer');
     if (!container) return;
@@ -1642,19 +1603,18 @@ function showFloatingEmergency(em) {
     const icon = EMERGENCY_ICONS[type] || '🚨';
     const label = EMERGENCY_LABELS[type] || 'DARURAT';
     showFloatingNotification('emergency',
-        `${icon} ${label}`,
-        `${em.sender || 'User'} melaporkan darurat`,
-        `📍 ${em.location || 'Lokasi tidak diketahui'}`,
+        icon + ' ' + label,
+        (em.sender || 'User') + ' melaporkan darurat',
+        '📍 ' + (em.location || 'Lokasi tidak diketahui'),
         'Lihat',
         () => {
-            document.getElementById('hologramDisplay')?.scrollIntoView({ behavior: 'smooth' });
-            if (em.id) {
-                setTimeout(() => { window.location.href = DETAIL_URL + '?id=' + encodeURIComponent(em.id); }, 500);
-            }
+            const el = document.getElementById('hologramDisplay');
+            if (el) el.scrollIntoView({ behavior: 'smooth' });
+            if (em.id) setTimeout(() => { window.location.href = DETAIL_URL + '?id=' + encodeURIComponent(em.id); }, 500);
         }
     );
     if (navigator.vibrate) navigator.vibrate([500, 200, 500, 200, 1000]);
-    showToast(`🚨 ${label}`, `${em.sender} melaporkan darurat!`, 'fa-exclamation-triangle');
+    showToast('🚨 ' + label, (em.sender || 'User') + ' melaporkan darurat!', 'fa-exclamation-triangle');
 }
 
 // ====================================================================
@@ -1662,9 +1622,7 @@ function showFloatingEmergency(em) {
 // ====================================================================
 function triggerEmergencyFromNotification(notif) {
     if (isDismissed(notif.id)) return;
-    // ✅ Hanya trigger kalau diizinkan (user klik grid)
     if (!window._salinkAllowAutoTrigger) {
-        console.log('⏸️ [Emergency] Auto-trigger disabled, hanya tampil di hologram');
         return;
     }
     const em = {
@@ -1688,10 +1646,8 @@ function triggerEmergencyFromNotification(notif) {
     updateEmergencyBadges();
     updateNotifBadge();
     if (isStandbyMode()) {
-        console.log('🔴 [Emergency] STANDBY mode → FULL SCREEN ALARM');
         showFullScreenAlarm(em);
     } else {
-        console.log('🟢 [Emergency] AKTIF mode → FLOATING + BUTTON GRID');
         showFloatingEmergency(em);
         if (typeof SalinkEmergency !== 'undefined' && SalinkEmergency &&
             typeof SalinkEmergency.triggerGridAlarmFromPost === 'function') {
@@ -1735,10 +1691,9 @@ async function ambilLokasiSaya() {
         const lat = position.coords.latitude.toFixed(6);
         const lng = position.coords.longitude.toFixed(6);
         const accuracy = Math.round(position.coords.accuracy || 0);
-        const mapsURL = `https://www.google.com/maps?q=${lat},${lng}`;
+        const mapsURL = 'https://www.google.com/maps?q=' + lat + ',' + lng;
 
-        console.log('📍 GPS OK:', lat, lng, '±', accuracy, 'm');
-        coordsEl.textContent = `${lat}, ${lng} (±${accuracy}m)`;
+        coordsEl.textContent = lat + ', ' + lng + ' (±' + accuracy + 'm)';
         addrEl.textContent = '🔄 Mengambil alamat...';
         resultBox.classList.add('active');
         mapsLink.href = mapsURL;
@@ -1747,15 +1702,15 @@ async function ambilLokasiSaya() {
             lat: parseFloat(lat),
             lng: parseFloat(lng),
             accuracy: accuracy,
-            address: `${lat}, ${lng}`,
+            address: lat + ', ' + lng,
             mapsURL: mapsURL
         };
 
         try {
-            const nominatimUrl = `${NOMINATIM_URL}?format=json&lat=${lat}&lon=${lng}&zoom=18&addressdetails=1&accept-language=id`;
+            const nominatimUrl = NOMINATIM_URL + '?format=json&lat=' + lat + '&lon=' + lng + '&zoom=18&addressdetails=1&accept-language=id';
             const response = await fetch(nominatimUrl, {
                 method: 'GET',
-                headers: { 'User-Agent': 'SALINK-Emergency-App/7.0' }
+                headers: { 'User-Agent': 'SALINK-Emergency-App/9.0' }
             });
             if (response.ok) {
                 const data = await response.json();
@@ -1763,46 +1718,44 @@ async function ambilLokasiSaya() {
                     addrEl.textContent = '📍 ' + data.display_name;
                     currentGpsData.address = data.display_name;
                 } else {
-                    addrEl.textContent = `📍 Koordinat: ${lat}, ${lng}`;
+                    addrEl.textContent = '📍 Koordinat: ' + lat + ', ' + lng;
                 }
             } else {
-                addrEl.textContent = `📍 Koordinat: ${lat}, ${lng}`;
+                addrEl.textContent = '📍 Koordinat: ' + lat + ', ' + lng;
             }
         } catch(e) {
-            addrEl.textContent = `📍 Koordinat: ${lat}, ${lng}`;
+            addrEl.textContent = '📍 Koordinat: ' + lat + ', ' + lng;
         }
 
         btn.classList.remove('loading');
         btnText.textContent = '✅ Lokasi Ditemukan — Tap untuk Ambil Ulang';
         btn.style.background = 'linear-gradient(135deg, #3fb950, #2ea44f)';
-        showToast('📍 Lokasi Ditemukan', `Akurasi ±${accuracy}m`, 'fa-location-arrow', 'success');
+        showToast('📍 Lokasi Ditemukan', 'Akurasi ±' + accuracy + 'm', 'fa-location-arrow');
 
     } catch(error) {
-        console.error('❌ GPS error:', error);
         btn.classList.remove('loading');
         btnText.textContent = '📍 Ambil Lokasi Saya';
         btn.style.background = '';
 
         let errMsg = 'Gagal mengambil lokasi. ';
         switch(error.code) {
-            case 1: errMsg += 'Izin lokasi ditolak. Aktifkan di Settings browser.'; break;
+            case 1: errMsg += 'Izin lokasi ditolak.'; break;
             case 2: errMsg += 'Lokasi tidak tersedia.'; break;
             case 3: errMsg += 'Timeout. Coba lagi.'; break;
             default: errMsg += error.message || 'Coba lagi.';
         }
         errorBox.textContent = '❌ ' + errMsg;
         errorBox.classList.add('active');
-        showToast('⚠️ Gagal', errMsg, 'fa-exclamation-triangle', 'error');
+        showToast('⚠️ Gagal', errMsg, 'fa-exclamation-triangle');
     }
 }
 
 // ====================================================================
-// 13. GOOGLE DRIVE MODULE — v7.0 FINAL
+// 13. GOOGLE DRIVE MODULE
 // ====================================================================
 function initGoogleDrive() {
     return new Promise((resolve, reject) => {
         if (typeof gapi === 'undefined' || typeof google === 'undefined') {
-            console.warn('⚠️ [GDrive] Google API belum loaded');
             reject(new Error('Google API not loaded'));
             return;
         }
@@ -1832,7 +1785,6 @@ function initGoogleDrive() {
                 console.log('✅ [GDrive] Initialized');
                 resolve(true);
             } catch (err) {
-                console.error('❌ [GDrive] Init error:', err);
                 reject(err);
             }
         });
@@ -1855,7 +1807,6 @@ function requestGDriveToken(forceNew) {
             if (tokenResponse && tokenResponse.access_token) {
                 gdriveAccessToken = tokenResponse.access_token;
                 gdriveTokenExpiresAt = Date.now() + (tokenResponse.expires_in * 1000);
-                console.log('✅ [GDrive] Token granted');
                 resolve(gdriveAccessToken);
             } else {
                 reject(new Error('Token tidak diterima'));
@@ -1870,29 +1821,23 @@ function requestGDriveToken(forceNew) {
     });
 }
 
-// ✅ v7.0 — Upload dengan URL yang STABIL
-
 async function uploadToGDrive(file, retryCount) {
     retryCount = retryCount || 0;
-    console.log('📤 [GDrive] Upload attempt', retryCount + 1, ':', file.name, '(' + (file.size / 1024).toFixed(1) + ' KB)');
+    console.log('📤 [GDrive] Upload attempt', retryCount + 1, ':', file.name);
 
     try {
-        // ✅ v8.0: SELALU cek token sebelum upload
-        console.log('🔑 [GDrive] Step 1: Check/refresh token...');
         let token = await requestGDriveToken();
         console.log('✅ [GDrive] Token OK');
 
-        // Step 2: Metadata
         const metadata = {
             name: 'SALINK_' + Date.now() + '_' + file.name,
             mimeType: file.type,
             parents: [GDRIVE_CONFIG.FOLDER_ID]
         };
 
-        // Step 3: Multipart body
         const boundary = '-------314159265358979323846';
-        const delimiter = "\r\n--" + boundary + "\r\n";
-        const close_delim = "\r\n--" + boundary + "--";
+        const delimiter = '\r\n--' + boundary + '\r\n';
+        const close_delim = '\r\n--' + boundary + '--';
         const metadataStr = JSON.stringify(metadata);
         const fileBuffer = await file.arrayBuffer();
 
@@ -1908,8 +1853,6 @@ async function uploadToGDrive(file, retryCount) {
         const bodyTail = new Blob([close_delim], { type: 'text/plain' });
         const body = new Blob([bodyHead, fileBuffer, bodyTail]);
 
-        // Step 4: Upload
-        console.log('📡 [GDrive] Step 4: Uploading to Drive...');
         const response = await fetch('https://www.googleapis.com/upload/drive/v3/files?uploadType=multipart&fields=id,name,webViewLink,webContentLink,thumbnailLink', {
             method: 'POST',
             headers: {
@@ -1921,9 +1864,8 @@ async function uploadToGDrive(file, retryCount) {
 
         console.log('📡 [GDrive] Response status:', response.status);
 
-        // ✅ v8.0: Handle 401 (token expired) — refresh & retry
         if (response.status === 401 && retryCount < 2) {
-            console.warn('⚠️ [GDrive] Token expired (401), refreshing...');
+            console.warn('⚠️ [GDrive] Token expired, refreshing...');
             gdriveAccessToken = null;
             gdriveTokenExpiresAt = 0;
             await requestGDriveToken(true);
@@ -1934,36 +1876,22 @@ async function uploadToGDrive(file, retryCount) {
             const errText = await response.text();
             console.error('❌ [GDrive] Upload failed:', response.status, errText);
 
-            // ✅ v8.0: Retry untuk 5xx error
             if (response.status >= 500 && retryCount < 2) {
-                console.warn('⚠️ [GDrive] Server error (' + response.status + '), retrying...');
                 await new Promise(r => setTimeout(r, 2000));
                 return uploadToGDrive(file, retryCount + 1);
             }
 
-            let errDetail = errText;
-            try {
-                const errJson = JSON.parse(errText);
-                errDetail = errJson.error ? errJson.error.message : errText;
-            } catch(e) {}
-
-            throw new Error('HTTP ' + response.status + ': ' + errDetail);
+            throw new Error('HTTP ' + response.status);
         }
 
         const result = await response.json();
-        console.log('✅ [GDrive] Upload success:', result);
+        console.log('✅ [GDrive] Upload success:', result.id);
 
-        // Step 5: Set permission PUBLIC
         await setViewOnlyPermission(result.id, token);
-
-        // Step 6: Tunggu 2 detik biar Drive selesai proses
-        console.log('⏳ [GDrive] Waiting 2s for Drive to process...');
-        await new Promise(r => setTimeout(r, 2000));
+        await new Promise(r => setTimeout(r, 1500));
 
         const imageUrlFull = 'https://drive.google.com/thumbnail?id=' + result.id + '&sz=w1000';
         const videoEmbedFull = 'https://drive.google.com/file/d/' + result.id + '/preview';
-
-        console.log('🖼️ [GDrive] Image URL:', imageUrlFull);
 
         return {
             id: result.id,
@@ -1976,16 +1904,14 @@ async function uploadToGDrive(file, retryCount) {
             imageUrlAlt: 'https://lh3.googleusercontent.com/d/' + result.id + '=w1000'
         };
     } catch (err) {
-        // ✅ v8.0: Retry kalau network error
         if (retryCount < 2 && (err.message.indexOf('Failed to fetch') !== -1 || err.message.indexOf('NetworkError') !== -1)) {
-            console.warn('⚠️ [GDrive] Network error, retrying...');
             await new Promise(r => setTimeout(r, 2000));
             return uploadToGDrive(file, retryCount + 1);
         }
-        console.error('❌ [GDrive] Upload error DETAIL:', err);
         throw err;
     }
 }
+
 async function setViewOnlyPermission(fileId, token) {
     try {
         const response = await fetch('https://www.googleapis.com/drive/v3/files/' + fileId + '/permissions', {
@@ -2001,15 +1927,8 @@ async function setViewOnlyPermission(fileId, token) {
             })
         });
 
-        if (!response.ok) {
-            const errText = await response.text();
-            console.warn('⚠️ [GDrive] Permission warning:', errText);
-        } else {
-            console.log('✅ [GDrive] Permission set: public reader');
-        }
-    } catch (err) {
-        console.warn('⚠️ [GDrive] Permission error:', err.message);
-    }
+        if (response.ok) console.log('✅ [GDrive] Permission: public reader');
+    } catch (err) {}
 }
 
 async function deleteFromGDrive(fileId) {
@@ -2020,13 +1939,8 @@ async function deleteFromGDrive(fileId) {
             method: 'DELETE',
             headers: { 'Authorization': 'Bearer ' + token }
         });
-        if (response.ok || response.status === 204) {
-            console.log('✅ [GDrive] File deleted:', fileId);
-            return true;
-        }
-        return false;
+        return response.ok || response.status === 204;
     } catch (err) {
-        console.warn('⚠️ [GDrive] Delete error:', err.message);
         return false;
     }
 }
@@ -2119,7 +2033,7 @@ async function apiSavePost(postData) {
 
 async function apiSaveEmergency(emergencyData) {
     const payload = {
-        id: emergencyData.id || ('emergency-' + Date.now() + '-' + Math.random().toString(36).substring(2, 10)),
+        id: emergencyData.id || ('emergency-' + Date.now()),
         type: emergencyData.type,
         title: emergencyData.title || EMERGENCY_LABELS[emergencyData.type],
         sender: emergencyData.sender,
@@ -2130,10 +2044,7 @@ async function apiSaveEmergency(emergencyData) {
         latitude: emergencyData.latitude || '',
         longitude: emergencyData.longitude || '',
         mapsURL: emergencyData.mapsURL || '',
-        mapEmbedURL: emergencyData.mapEmbedURL ||
-            (emergencyData.latitude && emergencyData.longitude
-                ? 'https://www.google.com/maps?q=' + emergencyData.latitude + ',' + emergencyData.longitude + '&output=embed'
-                : ''),
+        mapEmbedURL: emergencyData.mapEmbedURL || '',
         timestamp: new Date().toISOString(),
         status: emergencyData.status || 'active',
         resolvedAt: '',
@@ -2162,7 +2073,6 @@ async function incrementViewerCount(postId) {
             if (post) {
                 post.viewerCount = result.viewerCount;
                 safeSavePosts(posts);
-                broadcastSync('stats_update', { postId: postId });
             }
         }
     } catch (error) {}
@@ -2231,39 +2141,41 @@ function loadPostsFromStorage() {
 }
 
 // ====================================================================
-// 16. HELPERS: safeSavePosts + getMediaFromStore
+// 16. HELPERS: safeSavePosts + getMediaFromStore + getMediaUrlFromPost
 // ====================================================================
+// ✅ v10.0: JANGAN hapus mediaData — simpan thumbnail kecil
 function safeSavePosts(postsArray) {
     try {
-        // ✅ v8.0: JANGAN hapus mediaData kalau ada gdriveId
-        // Postingan dengan Google Drive URL tetap punya URL yang valid
         const lightPosts = postsArray.map(p => {
             if (!p) return p;
             const copy = Object.assign({}, p);
-            // Hanya hapus base64 kalau media BENAR-BENAR di Drive
-            if (copy.mediaId && copy.gdriveId) {
-                copy.mediaData = '';
+
+            // ✅ v10.0: Simpan thumbnail kecil (max 20KB) sebagai backup
+            if (copy.mediaData && copy.mediaData.length > 20000) {
+                copy.mediaData = copy.mediaData.substring(0, 20000);
             }
+
             return copy;
         });
         localStorage.setItem('salink_posts', JSON.stringify(lightPosts));
         console.log('✅ [safeSavePosts] Saved', lightPosts.length, 'posts');
         return true;
     } catch (e) {
-        console.warn('⚠️ [safeSavePosts] Quota penuh, cleanup media...', e.message);
+        console.warn('⚠️ [safeSavePosts] Quota penuh:', e.message);
         cleanupOldMedia();
         try {
             const lightPosts = postsArray.map(p => {
                 if (!p) return p;
                 const copy = Object.assign({}, p);
-                if (copy.mediaId && copy.gdriveId) copy.mediaData = '';
+                if (copy.mediaData && copy.mediaData.length > 20000) {
+                    copy.mediaData = copy.mediaData.substring(0, 20000);
+                }
                 return copy;
             });
             localStorage.setItem('salink_posts', JSON.stringify(lightPosts));
             return true;
         } catch (e2) {
             console.error('❌ [safeSavePosts] Gagal total:', e2.message);
-            showToast('⚠️ Storage Penuh', 'Hapus beberapa postingan lama', 'fa-exclamation-triangle');
             return false;
         }
     }
@@ -2279,12 +2191,8 @@ function getMediaFromStore(mediaId, fallbackData) {
     return fallbackData || '';
 }
 
-// ✅ v7.0: getMediaUrlFromPost pakai URL STABIL
-
 function getMediaUrlFromPost(post) {
     if (!post) return '';
-
-    // ✅ v8.0: Prioritas Google Drive URL
     if (post.gdriveId) {
         if (post.mediaType === 'image') {
             return post.gdriveImageUrl || ('https://drive.google.com/thumbnail?id=' + post.gdriveId + '&sz=w1000');
@@ -2292,20 +2200,83 @@ function getMediaUrlFromPost(post) {
             return post.gdriveVideoEmbed || ('https://drive.google.com/file/d/' + post.gdriveId + '/preview');
         }
     }
-
-    // Fallback: mediaData base64 (untuk post lama sebelum GDrive)
     if (post.mediaData && post.mediaData.indexOf('data:') === 0) {
         return post.mediaData;
     }
-
-    // Fallback: local media store
     if (post.mediaId) {
         return getMediaFromStore(post.mediaId, post.mediaData);
     }
-
     return '';
 }
-        
+
+function cleanupOldMedia() {
+    try {
+        const mediaStore = JSON.parse(localStorage.getItem('salink_post_media') || '{}');
+        const entries = Object.keys(mediaStore).map(k => ({ id: k, ts: mediaStore[k].timestamp || 0 }));
+        entries.sort((a, b) => a.ts - b.ts);
+        const toDelete = entries.slice(0, Math.ceil(entries.length * 0.3));
+        toDelete.forEach(e => delete mediaStore[e.id]);
+        localStorage.setItem('salink_post_media', JSON.stringify(mediaStore));
+    } catch(e) {}
+}
+
+// ✅ v10.0: Auto-retry image error dengan 5 fallback bertingkat
+function handleImageError(img) {
+    const postId = img.getAttribute('data-post-id');
+    const fallback1 = img.getAttribute('data-fallback-1');
+    const fallback2 = img.getAttribute('data-fallback-2');
+    const backupThumb = img.getAttribute('data-backup-thumb');
+    const currentSrc = img.src;
+
+    console.log('⚠️ [Image Error] Post:', postId);
+
+    // Step 1: Coba fallback 1 (lh3.googleusercontent)
+    if (fallback1 && currentSrc !== fallback1 && !img.getAttribute('data-tried-1')) {
+        console.log('🔄 [Retry] Fallback 1');
+        img.setAttribute('data-tried-1', 'true');
+        img.src = fallback1;
+        return;
+    }
+
+    // Step 2: Coba fallback 2 (drive.google.com/uc)
+    if (fallback2 && currentSrc !== fallback2 && !img.getAttribute('data-tried-2')) {
+        console.log('🔄 [Retry] Fallback 2');
+        img.setAttribute('data-tried-2', 'true');
+        img.src = fallback2;
+        return;
+    }
+
+    // Step 3: Coba URL primary lagi (dengan cache buster)
+    const retryCount = parseInt(img.getAttribute('data-retry-count') || '0', 10);
+    if (retryCount < 3) {
+        const delay = (retryCount + 1) * 1500;
+        console.log('⏳ [Retry] Waiting', delay, 'ms... (attempt', retryCount + 1, ')');
+        img.setAttribute('data-retry-count', String(retryCount + 1));
+        setTimeout(() => {
+            const primaryUrl = img.getAttribute('src').split('?')[0];
+            const freshUrl = primaryUrl + '?t=' + Date.now();
+            img.src = freshUrl;
+        }, delay);
+        return;
+    }
+
+    // Step 4: Fallback ke thumbnail dari localStorage (backup terakhir)
+    if (backupThumb && backupThumb.indexOf('data:image') === 0) {
+        console.log('🖼️ [Retry] Using backup thumbnail');
+        img.src = backupThumb;
+        img.removeAttribute('data-retry-count');
+        return;
+    }
+
+    // Step 5: Semua gagal
+    console.log('❌ [Image Failed] Post:', postId);
+    img.parentElement.innerHTML = '<div style="padding:40px 20px;text-align:center;color:var(--text-muted);font-size:0.7rem;background:var(--bg-input);border-radius:8px;">' +
+        '<div style="font-size:2rem;margin-bottom:8px;opacity:0.3;">🖼️</div>' +
+        '<div>Gambar tidak dapat dimuat</div>' +
+        '<div style="font-size:0.6rem;margin-top:4px;opacity:0.6;">Cek folder Google Drive</div>' +
+    '</div>';
+}
+
 // ====================================================================
 // 17. CENTRAL DELETE
 // ====================================================================
@@ -2316,7 +2287,7 @@ function requestDelete(type, id, description) {
     const modal = document.getElementById('deleteConfirmModal');
     const msgEl = document.getElementById('deleteConfirmMsg');
     if (msgEl) {
-        msgEl.innerHTML = 'Anda akan menghapus <strong>' + description + '</strong> dari SEMUA halaman:<br><br>✅ Dashboard<br>✅ Profil<br>✅ Laporan Saya<br>✅ Statistik<br>✅ Command Center';
+        msgEl.innerHTML = 'Anda akan menghapus <strong>' + description + '</strong> dari SEMUA halaman.';
     }
     if (modal) modal.classList.add('active');
 }
@@ -2367,10 +2338,10 @@ async function confirmDeleteNow() {
         updateNotifBadge();
         updateAllCharts();
         updateStatsCards();
-        showToast('✅ Dihapus', 'Data berhasil dihapus dari semua halaman', 'fa-check-circle', 'success');
+        showToast('✅ Dihapus', 'Data berhasil dihapus', 'fa-check-circle');
         playRegularSound();
     } catch(e) {
-        showToast('⚠️ Gagal', 'Tidak dapat menghapus data', 'fa-exclamation-triangle', 'error');
+        showToast('⚠️ Gagal', 'Tidak dapat menghapus data', 'fa-exclamation-triangle');
     }
     hideSyncIndicator();
 }
@@ -2475,7 +2446,7 @@ function renderHologram() {
     if (!list) return;
     const ems = getActiveEmergencies();
     if (ems.length === 0) {
-        list.innerHTML = '<div class="hologram-empty"><div class="empty-icon">📡</div><div class="empty-title">Menunggu Laporan Darurat</div><div class="empty-desc">Belum ada laporan emergency aktif. Sistem akan menampilkan notifikasi darurat secara real-time di sini.</div></div>';
+        list.innerHTML = '<div class="hologram-empty"><div class="empty-icon">📡</div><div class="empty-title">Menunggu Laporan Darurat</div><div class="empty-desc">Belum ada laporan emergency aktif.</div></div>';
         return;
     }
     ems.sort((a,b) => b.timestamp - a.timestamp);
@@ -2488,46 +2459,31 @@ function renderHologram() {
         let embedUrl = em.mapEmbedURL || '';
         if (!embedUrl && em.coords && em.coords.indexOf(',') !== -1) {
             const parts = em.coords.split(',');
-            const lat = parts[0] ? parts[0].trim() : '';
-            const lng = parts[1] ? parts[1].trim() : '';
-            if (lat && lng && !isNaN(parseFloat(lat)) && !isNaN(parseFloat(lng))) {
-                embedUrl = 'https://www.google.com/maps?q=' + lat + ',' + lng + '&output=embed';
-            }
-        }
-        let thumbHtml = '';
-        const thumbData = em.mediaData || (em.imagesArray && em.imagesArray[0]) || '';
-        if (thumbData && (thumbData.indexOf('data:image/') === 0 || thumbData.indexOf('http') === 0)) {
-            thumbHtml = '<div class="hologram-item-thumb" onclick="openEmergencyDetail(\'' + escapeAttr(em.id) + '\')" style="width:100%;max-height:160px;border-radius:10px;overflow:hidden;margin:8px 0;border:1px solid var(--border-color);cursor:pointer;position:relative;"><img src="' + escapeAttr(thumbData) + '" style="width:100%;height:100%;object-fit:cover;display:block;" onerror="this.parentElement.style.display=\'none\';"><div style="position:absolute;bottom:6px;right:6px;background:rgba(0,0,0,0.75);color:#fff;padding:3px 8px;border-radius:10px;font-size:0.55rem;font-weight:700;">📸 Lihat Foto</div></div>';
+            embedUrl = 'https://www.google.com/maps?q=' + parts[0].trim() + ',' + parts[1].trim() + '&output=embed';
         }
         return '<div class="hologram-item ' + cssClass + '" data-id="' + escapeAttr(em.id) + '">' +
             '<div class="hologram-item-header">' +
                 '<span class="hologram-item-icon">' + icon + '</span>' +
                 '<span class="hologram-item-type ' + cssClass + '">' + label + '</span>' +
                 '<span class="hologram-item-time">' + getTimeAgo(em.timestamp) + '</span>' +
-                '<button class="hologram-item-delete" onclick="requestDelete(\'emergency\', \'' + escapeAttr(em.id) + '\', \'' + label + '\')" title="Hapus permanen"><i class="fas fa-times"></i></button>' +
+                '<button class="hologram-item-delete" onclick="requestDelete(\'emergency\', \'' + escapeAttr(em.id) + '\', \'' + label + '\')"><i class="fas fa-times"></i></button>' +
             '</div>' +
             '<div class="hologram-item-sender">📤 Dilaporkan oleh: <strong onclick="handleProfileClick(\'' + escapeAttr(em.senderUsername || 'sistem') + '\')">' + escapeHTML(em.sender) + '</strong></div>' +
             (em.text ? '<div class="hologram-item-text">' + escapeHTML(em.text) + '</div>' : '') +
-            thumbHtml +
             '<div class="hologram-item-location"><i class="fas fa-map-marker-alt"></i><span>' + escapeHTML(em.location || '-') + '</span></div>' +
-            (em.address && em.address !== em.location ? '<div class="hologram-item-location" style="padding-left:22px;font-size:0.65rem;color:var(--text-muted);"><span>📌 ' + escapeHTML(em.address) + '</span></div>' : '') +
             (em.coords ? '<div class="hologram-item-coords"><i class="fas fa-crosshairs"></i> ' + escapeHTML(em.coords) + '</div>' : '') +
             (embedUrl ? '<div style="width:100%;margin:8px 0;border-radius:10px;overflow:hidden;border:1px solid var(--border-color);"><iframe src="' + escapeAttr(embedUrl) + '" style="display:block;width:100%;height:180px;border:none;" loading="lazy" allowfullscreen></iframe></div>' : '') +
             '<div class="hologram-item-actions">' +
-                (mapLink ? '<a href="' + escapeAttr(mapLink) + '" target="_blank" class="btn-map-item" onclick="incrementViewerCount(\'' + escapeAttr(em.id) + '\')"><i class="fas fa-external-link-alt"></i> Lihat Di Google Maps</a>' : '') +
-                '<a href="detail-emergency.html?id=' + encodeURIComponent(em.id) + '" class="btn-map-item btn-detail" onclick="incrementViewerCount(\'' + escapeAttr(em.id) + '\')"><i class="fas fa-info-circle"></i> Detail</a>' +
+                (mapLink ? '<a href="' + escapeAttr(mapLink) + '" target="_blank" class="btn-map-item"><i class="fas fa-external-link-alt"></i> Lihat Peta</a>' : '') +
+                '<a href="detail-emergency.html?id=' + encodeURIComponent(em.id) + '" class="btn-map-item btn-detail"><i class="fas fa-info-circle"></i> Detail</a>' +
             '</div>' +
             '<div class="hologram-item-expiry"><i class="fas fa-clock"></i> ' + getRemainingTime(em.expiresAt) + '</div>' +
         '</div>';
     }).join('');
 }
-function openEmergencyDetail(id) {
-    if (!id) return;
-    window.location.href = DETAIL_URL + '?id=' + encodeURIComponent(id);
-}
 
 // ====================================================================
-// 21. RENDER POSTS — v7.0 dengan FALLBACK URL
+// 21. RENDER POSTS
 // ====================================================================
 function renderPosts() {
     const feed = document.getElementById('postFeed');
@@ -2552,50 +2508,49 @@ function renderPosts() {
         const profilePic = post.userProfilePic ? '<img src="' + escapeAttr(post.userProfilePic) + '" alt="">' : (post.userGender === 'female' ? '<i class="fas fa-female"></i>' : '<i class="fas fa-male"></i>');
         const specialBadge = post.isSpecial && post.specialType ? '<span style="background:rgba(88,166,255,0.15);padding:2px 8px;border-radius:10px;font-size:0.5rem;color:var(--accent-blue);margin-left:6px;">' + EMERGENCY_ICONS[post.specialType] + ' ' + EMERGENCY_LABELS[post.specialType] + '</span>' : '';
 
-        // ✅ v8.1 FIX: Render media dengan RETRY + LAZY LOAD
-let mediaHTML = '';
-if (post.mediaType) {
-    const isGDrive = !!post.gdriveId;
-    const mediaSource = getMediaUrlFromPost(post);
+    // ✅ v10.0: Render media dengan KONSISTENSI TINGGI
+        let mediaHTML = '';
+        if (post.mediaType) {
+            const isGDrive = !!post.gdriveId;
+            const mediaSource = getMediaUrlFromPost(post);
 
-    if (mediaSource) {
-        if (post.mediaType === 'image') {
-            if (isGDrive) {
-                // URL PRIMARY: drive.google.com/thumbnail (paling stabil)
-                const primaryUrl = post.gdriveImageUrl || ('https://drive.google.com/thumbnail?id=' + post.gdriveId + '&sz=w1000');
-                // URL FALLBACK 1: lh3.googleusercontent
-                const fallbackUrl = 'https://lh3.googleusercontent.com/d/' + post.gdriveId + '=w1000';
-                // URL FALLBACK 2: drive.google.com/uc (direct)
-                const fallbackUrl2 = 'https://drive.google.com/uc?export=view&id=' + post.gdriveId;
+            if (post.mediaType === 'image') {
+                if (isGDrive) {
+                    // 3 URL untuk retry otomatis
+                    const primaryUrl = post.gdriveImageUrl || ('https://drive.google.com/thumbnail?id=' + post.gdriveId + '&sz=w1000');
+                    const fallbackUrl1 = 'https://lh3.googleusercontent.com/d/' + post.gdriveId + '=w1000';
+                    const fallbackUrl2 = 'https://drive.google.com/uc?export=view&id=' + post.gdriveId;
+                    // Backup thumbnail dari localStorage
+                    const backupThumb = post.mediaData || '';
 
-                // ✅ Retry logic dengan delay (Drive butuh waktu generate)
-                mediaHTML = '<div class="post-media" style="position:relative;min-height:120px;background:var(--bg-input);border-radius:8px;overflow:hidden;">' +
-                    '<img src="' + escapeAttr(primaryUrl) + '" alt="" ' +
-                    'loading="lazy" draggable="false" oncontextmenu="return false;" ' +
-                    'style="width:100%;height:auto;max-height:400px;object-fit:contain;display:block;user-select:none;-webkit-user-drag:none;border-radius:8px;" ' +
-                    'data-post-id="' + escapeAttr(post.id) + '" ' +
-                    'data-fallback-1="' + escapeAttr(fallbackUrl) + '" ' +
-                    'data-fallback-2="' + escapeAttr(fallbackUrl2) + '" ' +
-                    'onerror="handleImageError(this);" ' +
-                    'onload="this.parentElement.style.minHeight=\'0\';" ' +
-                    '>' +
-                    '<div style="position:absolute;bottom:6px;right:6px;background:rgba(0,0,0,0.7);color:#fff;padding:2px 8px;border-radius:8px;font-size:0.5rem;font-weight:600;pointer-events:none;">📸 View Only</div>' +
-                '</div>';
-            } else {
-                mediaHTML = '<div class="post-media"><img src="' + escapeAttr(mediaSource) + '" alt="" loading="lazy" draggable="false" oncontextmenu="return false;" style="width:100%;height:auto;max-height:400px;object-fit:contain;border-radius:8px;" onerror="this.parentElement.innerHTML=\'<div style=\\\'padding:20px;text-align:center;color:var(--text-muted);font-size:0.7rem;\\\'>🖼️ Media tidak tersedia</div>\';"></div>';
-            }
-        } else if (post.mediaType === 'video') {
-            if (isGDrive) {
-                mediaHTML = '<div class="post-media" style="position:relative;padding-bottom:56.25%;height:0;overflow:hidden;border-radius:8px;">' +
-                    '<iframe src="' + escapeAttr(mediaSource) + '" style="position:absolute;top:0;left:0;width:100%;height:100%;border:0;" allow="autoplay" allowfullscreen loading="lazy"></iframe>' +
-                '</div>';
-            } else {
-                mediaHTML = '<div class="post-media"><video controls preload="metadata" controlsList="nodownload" oncontextmenu="return false;" style="width:100%;max-height:400px;border-radius:8px;"><source src="' + escapeAttr(mediaSource) + '"></video></div>';
+                    mediaHTML = '<div class="post-media" style="position:relative;min-height:150px;background:var(--bg-input);border-radius:8px;overflow:hidden;">' +
+                        '<img src="' + escapeAttr(primaryUrl) + '" alt="" ' +
+                        'loading="lazy" draggable="false" oncontextmenu="return false;" ' +
+                        'style="width:100%;height:auto;max-height:400px;object-fit:contain;display:block;user-select:none;-webkit-user-drag:none;border-radius:8px;" ' +
+                        'data-post-id="' + escapeAttr(post.id) + '" ' +
+                        'data-fallback-1="' + escapeAttr(fallbackUrl1) + '" ' +
+                        'data-fallback-2="' + escapeAttr(fallbackUrl2) + '" ' +
+                        'data-backup-thumb="' + escapeAttr(backupThumb) + '" ' +
+                        'onerror="handleImageError(this);" ' +
+                        'onload="this.parentElement.style.minHeight=\'0\';this.parentElement.style.background=\'transparent\';" ' +
+                        '>' +
+                        '<div style="position:absolute;bottom:6px;right:6px;background:rgba(0,0,0,0.7);color:#fff;padding:2px 8px;border-radius:8px;font-size:0.5rem;font-weight:600;pointer-events:none;">📸 View Only</div>' +
+                    '</div>';
+                } else if (mediaSource) {
+                    // Local media (fallback dari localStorage)
+                    mediaHTML = '<div class="post-media"><img src="' + escapeAttr(mediaSource) + '" alt="" loading="lazy" draggable="false" oncontextmenu="return false;" style="width:100%;height:auto;max-height:400px;object-fit:contain;border-radius:8px;" onerror="this.parentElement.innerHTML=\'<div style=\\\'padding:20px;text-align:center;color:var(--text-muted);font-size:0.7rem;\\\'>🖼️ Media tidak tersedia</div>\';"></div>';
+                }
+            } else if (post.mediaType === 'video') {
+                if (isGDrive) {
+                    mediaHTML = '<div class="post-media" style="position:relative;padding-bottom:56.25%;height:0;overflow:hidden;border-radius:8px;">' +
+                        '<iframe src="' + escapeAttr(mediaSource) + '" style="position:absolute;top:0;left:0;width:100%;height:100%;border:0;" allow="autoplay" allowfullscreen loading="lazy"></iframe>' +
+                    '</div>';
+                } else if (mediaSource) {
+                    mediaHTML = '<div class="post-media"><video controls preload="metadata" controlsList="nodownload" oncontextmenu="return false;" style="width:100%;max-height:400px;border-radius:8px;"><source src="' + escapeAttr(mediaSource) + '"></video></div>';
+                }
             }
         }
-    }
-}
-
+        
         const el = document.createElement('div');
         el.className = 'post';
         el.id = 'post-' + post.id;
@@ -2653,55 +2608,6 @@ if (post.mediaType) {
     renderPostsStats();
 }
 
-// ✅ v8.1 FIX: Auto-retry image error
-function handleImageError(img) {
-    const postId = img.getAttribute('data-post-id');
-    const fallback1 = img.getAttribute('data-fallback-1');
-    const fallback2 = img.getAttribute('data-fallback-2');
-    const currentSrc = img.src;
-
-    console.log('⚠️ [Image Error] Post:', postId, '| Src:', currentSrc);
-
-    // Coba fallback 1
-    if (fallback1 && currentSrc !== fallback1 && !img.getAttribute('data-tried-fallback-1')) {
-        console.log('🔄 [Image Retry] Fallback 1:', fallback1);
-        img.setAttribute('data-tried-fallback-1', 'true');
-        img.src = fallback1;
-        return;
-    }
-
-    // Coba fallback 2
-    if (fallback2 && currentSrc !== fallback2 && !img.getAttribute('data-tried-fallback-2')) {
-        console.log('🔄 [Image Retry] Fallback 2:', fallback2);
-        img.setAttribute('data-tried-fallback-2', 'true');
-        img.src = fallback2;
-        return;
-    }
-
-    // Retry dengan delay (Drive butuh waktu generate thumbnail)
-    const retryCount = parseInt(img.getAttribute('data-retry-count') || '0', 10);
-    if (retryCount < 3 && currentSrc === img.getAttribute('src')) {
-        const delay = (retryCount + 1) * 2000; // 2s, 4s, 6s
-        console.log('⏳ [Image Retry] Waiting', delay, 'ms...');
-        img.setAttribute('data-retry-count', String(retryCount + 1));
-        setTimeout(() => {
-            // Force reload dengan cache buster
-            const url = new URL(img.getAttribute('data-fallback-1') || img.src);
-            url.searchParams.set('_t', Date.now());
-            img.src = url.toString();
-        }, delay);
-        return;
-    }
-
-    // Semua gagal
-    console.log('❌ [Image Failed] Post:', postId);
-    img.parentElement.innerHTML = '<div style="padding:40px 20px;text-align:center;color:var(--text-muted);font-size:0.7rem;background:var(--bg-input);border-radius:8px;">' +
-        '<div style="font-size:2rem;margin-bottom:8px;opacity:0.3;">🖼️</div>' +
-        '<div>Gambar tidak dapat dimuat</div>' +
-        '<div style="font-size:0.6rem;margin-top:4px;opacity:0.6;">Cek folder Google Drive</div>' +
-    '</div>';
-}
-        
 // ====================================================================
 // 22. RENDER POSTS STATS
 // ====================================================================
@@ -2749,44 +2655,48 @@ function renderCompactPostCard(p) {
             '<div class="item-sub">' + escapeHTML(p.userFullName) + ' • Biasa</div>' +
         '</div>' +
         '<div class="item-time">' + getTimeAgo(p.timestamp) + '</div>' +
-        (isOwner ? '<button class="item-delete" onclick="requestDelete(\'post\', \'' + escapeAttr(p.id) + '\', \'Postingan\')" title="Hapus permanen"><i class="fas fa-trash"></i></button>' : '') +
+        (isOwner ? '<button class="item-delete" onclick="requestDelete(\'post\', \'' + escapeAttr(p.id) + '\', \'Postingan\')"><i class="fas fa-trash"></i></button>' : '') +
     '</div>';
 }
+
 function renderFullPostCard(p, isExpired) {
     const type = p.specialType;
     const icon = EMERGENCY_ICONS[type] || '🚨';
     const label = EMERGENCY_LABELS[type] || 'DARURAT';
     const cssClass = EMERGENCY_CSS_CLASS[type] || 'fire';
     const expiresAt = p.timestamp + EMERGENCY_DURATION;
-    const remaining = isExpired ? '⏱️ Kadaluarsa • Tetap tampil di sini' : getRemainingTime(expiresAt);
+    const remaining = isExpired ? '⏱️ Kadaluarsa' : getRemainingTime(expiresAt);
     const coords = (p.latitude && p.longitude) ? p.latitude + ', ' + p.longitude : '';
     const detailLink = 'detail-emergency.html?id=' + encodeURIComponent(p.id);
     const isOwner = currentUser && p.userId === currentUser.username;
 
-    // ✅ v8.1 FIX: Sama seperti renderPosts
-let mediaBlock = '';
-if (p.mediaType) {
-    const isGDrive = !!p.gdriveId;
-    const src = getMediaUrlFromPost(p);
-    if (src) {
+        // ✅ v10.0: Sama seperti renderPosts — konsistensi tinggi
+    let mediaBlock = '';
+    if (p.mediaType) {
+        const isGDrive = !!p.gdriveId;
+        const src = getMediaUrlFromPost(p);
+
         if (p.mediaType === 'image') {
             if (isGDrive) {
                 const primaryUrl = p.gdriveImageUrl || ('https://drive.google.com/thumbnail?id=' + p.gdriveId + '&sz=w1000');
-                const fallbackUrl = 'https://lh3.googleusercontent.com/d/' + p.gdriveId + '=w1000';
+                const fallbackUrl1 = 'https://lh3.googleusercontent.com/d/' + p.gdriveId + '=w1000';
                 const fallbackUrl2 = 'https://drive.google.com/uc?export=view&id=' + p.gdriveId;
+                const backupThumb = p.mediaData || '';
 
-                mediaBlock = '<div style="width:100%;max-height:400px;border-radius:10px;overflow:hidden;margin:10px 0;border:1px solid var(--border-color);position:relative;background:var(--bg-input);">' +
+                mediaBlock = '<div style="width:100%;max-height:400px;border-radius:10px;overflow:hidden;margin:10px 0;border:1px solid var(--border-color);position:relative;background:var(--bg-input);min-height:150px;">' +
                     '<img src="' + escapeAttr(primaryUrl) + '" ' +
                     'style="width:100%;height:auto;max-height:400px;object-fit:contain;display:block;user-select:none;-webkit-user-drag:none;" ' +
                     'loading="lazy" draggable="false" oncontextmenu="return false;" ' +
                     'data-post-id="' + escapeAttr(p.id) + '" ' +
-                    'data-fallback-1="' + escapeAttr(fallbackUrl) + '" ' +
+                    'data-fallback-1="' + escapeAttr(fallbackUrl1) + '" ' +
                     'data-fallback-2="' + escapeAttr(fallbackUrl2) + '" ' +
+                    'data-backup-thumb="' + escapeAttr(backupThumb) + '" ' +
                     'onerror="handleImageError(this);" ' +
+                    'onload="this.parentElement.style.minHeight=\'0\';this.parentElement.style.background=\'transparent\';" ' +
                     '>' +
                     '<div style="position:absolute;bottom:6px;right:6px;background:rgba(0,0,0,0.7);color:#fff;padding:2px 8px;border-radius:8px;font-size:0.5rem;font-weight:600;pointer-events:none;">📸 View Only</div>' +
                 '</div>';
-            } else {
+            } else if (src) {
                 mediaBlock = '<div style="width:100%;max-height:400px;border-radius:10px;overflow:hidden;margin:10px 0;border:1px solid var(--border-color);"><img src="' + escapeAttr(src) + '" style="width:100%;height:auto;max-height:400px;object-fit:contain;display:block;" loading="lazy" draggable="false" oncontextmenu="return false;"></div>';
             }
         } else if (p.mediaType === 'video') {
@@ -2794,13 +2704,12 @@ if (p.mediaType) {
                 mediaBlock = '<div style="width:100%;position:relative;padding-bottom:56.25%;height:0;overflow:hidden;border-radius:10px;margin:10px 0;border:1px solid var(--border-color);">' +
                     '<iframe src="' + escapeAttr(src) + '" style="position:absolute;top:0;left:0;width:100%;height:100%;border:0;" allow="autoplay" allowfullscreen loading="lazy"></iframe>' +
                 '</div>';
-            } else {
+            } else if (src) {
                 mediaBlock = '<div style="width:100%;border-radius:10px;overflow:hidden;margin:10px 0;border:1px solid var(--border-color);"><video controls preload="metadata" controlsList="nodownload" style="width:100%;max-height:400px;display:block;"><source src="' + escapeAttr(src) + '"></video></div>';
             }
         }
     }
-}
-    
+
     return '<div class="post-card-full ' + cssClass + ' ' + (isExpired ? 'expired' : '') + '" data-post-id="' + escapeAttr(p.id) + '">' +
         '<div class="pcf-header">' +
             '<span class="pcf-icon">' + icon + '</span>' +
@@ -2813,8 +2722,8 @@ if (p.mediaType) {
         '<div class="pcf-location"><i class="fas fa-map-marker-alt"></i><span>' + escapeHTML(p.specialLocation || p.specialAddress || 'Lokasi tidak diketahui') + '</span></div>' +
         (coords ? '<div class="pcf-coords"><i class="fas fa-crosshairs"></i> ' + escapeHTML(coords) + '</div>' : '') +
         '<div class="pcf-actions">' +
-            (p.mapsURL ? '<a href="' + escapeAttr(p.mapsURL) + '" target="_blank" rel="noopener noreferrer" class="btn-map-item" onclick="incrementViewerCount(\'' + escapeAttr(p.id) + '\')"><i class="fas fa-external-link-alt"></i> Lihat Peta</a>' : '') +
-            '<a href="' + detailLink + '" class="btn-map-item" style="background:var(--bg-card);color:var(--accent-blue);border:1px solid var(--accent-blue);" onclick="incrementViewerCount(\'' + escapeAttr(p.id) + '\')"><i class="fas fa-info-circle"></i> Detail</a>' +
+            (p.mapsURL ? '<a href="' + escapeAttr(p.mapsURL) + '" target="_blank" class="btn-map-item"><i class="fas fa-external-link-alt"></i> Lihat Peta</a>' : '') +
+            '<a href="' + detailLink + '" class="btn-map-item" style="background:var(--bg-card);color:var(--accent-blue);border:1px solid var(--accent-blue);"><i class="fas fa-info-circle"></i> Detail</a>' +
             (isOwner ? '<button class="btn-map-item btn-delete-perm" onclick="requestDelete(\'post\', \'' + escapeAttr(p.id) + '\', \'' + label + '\')"><i class="fas fa-trash"></i> Hapus</button>' : '') +
         '</div>' +
         '<div class="pcf-expiry"><i class="fas fa-clock"></i> ' + remaining + '</div>' +
@@ -2871,6 +2780,7 @@ function handleLikeClick(postId) { if (isPreviewMode) { showPreviewOverlay(); re
 function handleShareClick(postId) { if (isPreviewMode) { showPreviewOverlay(); return; } sharePost(postId); }
 function handleProfileClick(username) { if (isPreviewMode) { showPreviewOverlay(); return; } openProfileUser(username); }
 function handlePostItemClick(postId) { if (isPreviewMode) { showPreviewOverlay(); return; } const el = document.getElementById('post-' + postId); if (el) el.scrollIntoView({behavior:'smooth',block:'center'}); }
+
 function handleDetailClick(postId) {
     if (isPreviewMode) { showPreviewOverlay(); return; }
     const post = posts.find(p => p.id === postId);
@@ -2937,12 +2847,10 @@ function sharePost(postId) {
 }
 
 // ====================================================================
-// 23. CREATE POST — v7.0
+// 23. CREATE POST — v9.0 ANTI-DUPLIKAT
 // ====================================================================
 async function createPost(text, mediaFile, isSpecial, specialData) {
-    // ✅ v9.0: Anti duplikat — cek apakah sedang proses
     if (window._salinkPostingInProgress) {
-        console.log('⚠️ [createPost] Posting sudah berjalan, skip duplikat');
         showToast('⏳ Tunggu', 'Postingan sedang diproses...', 'fa-spinner');
         return;
     }
@@ -2950,7 +2858,6 @@ async function createPost(text, mediaFile, isSpecial, specialData) {
     if (isPreviewMode) { showPreviewOverlay(); return; }
     if (!currentUser) { redirectToLogin(); return; }
 
-    // ✅ v9.0: Set flag & disable tombol
     window._salinkPostingInProgress = true;
     const submitBtn = document.getElementById('postSubmit');
     if (submitBtn) {
@@ -2963,207 +2870,170 @@ async function createPost(text, mediaFile, isSpecial, specialData) {
         const hasMedia = mediaFile && mediaFile.size > 0;
 
         if (isSpecial) {
-            if (!hasText) { 
-                showToast('⚠️ Pesan kosong', 'Postingan khusus wajib isi pesan notifikasi', 'fa-exclamation-triangle'); 
-                return;
-            }
+            if (!hasText) { showToast('⚠️ Pesan kosong', 'Postingan khusus wajib isi pesan notifikasi', 'fa-exclamation-triangle'); return; }
         } else {
-            if (!hasText && !hasMedia) { 
-                showToast('⚠️ Postingan kosong', 'Isi teks atau upload foto/video', 'fa-exclamation-triangle'); 
-                return;
-            }
+            if (!hasText && !hasMedia) { showToast('⚠️ Postingan kosong', 'Isi teks atau upload foto/video', 'fa-exclamation-triangle'); return; }
         }
 
-    const uniqueId = 'content-' + Date.now() + '-' + Math.random().toString(36).substring(2, 10);
-    const postId = uniqueId;
-    const emergencyId = uniqueId;
-    const notifId = uniqueId;
-    const mediaId = 'media-' + uniqueId;
+        const uniqueId = 'content-' + Date.now() + '-' + Math.random().toString(36).substring(2, 10);
+        const postId = uniqueId;
+        const emergencyId = uniqueId;
+        const notifId = uniqueId;
+        const mediaId = 'media-' + uniqueId;
 
-    let mediaType = '';
-    let gdriveData = null;
-    let mediaDataLocal = '';
-    let mediaIdLocal = '';
+        let mediaType = '';
+        let gdriveData = null;
+        let mediaDataLocal = '';
+        let mediaIdLocal = '';
 
-    // Upload ke Google Drive
-    if (hasMedia) {
-        const isImage = mediaFile.type.indexOf('image/') === 0;
-        const isVideo = mediaFile.type.indexOf('video/') === 0;
-        mediaType = isImage ? 'image' : (isVideo ? 'video' : '');
+        if (hasMedia) {
+            const isImage = mediaFile.type.indexOf('image/') === 0;
+            const isVideo = mediaFile.type.indexOf('video/') === 0;
+            mediaType = isImage ? 'image' : (isVideo ? 'video' : '');
 
-        showToast('📤 Upload...', 'Mengirim media ke Google Drive...', 'fa-cloud-upload-alt');
-
-        try {
-            console.log('📤 [createPost] Uploading to Google Drive...');
-            gdriveData = await uploadToGDrive(mediaFile);
-            console.log('✅ [createPost] GDrive upload success:', gdriveData.id);
-            showToast('✅ Upload Berhasil', 'Media tersimpan di Google Drive', 'fa-check-circle');
-        } catch (err) {
-            console.error('❌ [createPost] GDrive upload gagal:', err.message);
-            showToast('⚠️ GDrive Gagal', 'Error: ' + err.message + '. Media disimpan lokal.', 'fa-exclamation-triangle');
-
-            mediaDataLocal = await new Promise((resolve) => {
-                const reader = new FileReader();
-                reader.onload = (e) => resolve(e.target.result);
-                reader.readAsDataURL(mediaFile);
-            });
-            mediaIdLocal = 'media-' + uniqueId;
+            showToast('📤 Upload...', 'Mengirim media ke Google Drive...', 'fa-cloud-upload-alt');
 
             try {
-                let mediaStore = JSON.parse(localStorage.getItem('salink_post_media') || '{}');
-                mediaStore[mediaIdLocal] = {
-                    type: mediaType,
-                    data: mediaDataLocal,
-                    timestamp: Date.now(),
-                    size: mediaDataLocal.length
-                };
-                localStorage.setItem('salink_post_media', JSON.stringify(mediaStore));
-            } catch(e) {
-                console.warn('⚠️ Gagal simpan media lokal:', e.message);
+                gdriveData = await uploadToGDrive(mediaFile);
+                showToast('✅ Upload Berhasil', 'Media tersimpan di Google Drive', 'fa-check-circle');
+            } catch (err) {
+                console.error('❌ [createPost] GDrive upload gagal:', err.message);
+                showToast('⚠️ GDrive Gagal', 'Error: ' + err.message + '. Media disimpan lokal.', 'fa-exclamation-triangle');
+
+                mediaDataLocal = await new Promise((resolve) => {
+                    const reader = new FileReader();
+                    reader.onload = (e) => resolve(e.target.result);
+                    reader.readAsDataURL(mediaFile);
+                });
+                mediaIdLocal = 'media-' + uniqueId;
+
+                try {
+                    let mediaStore = JSON.parse(localStorage.getItem('salink_post_media') || '{}');
+                    mediaStore[mediaIdLocal] = {
+                        type: mediaType,
+                        data: mediaDataLocal,
+                        timestamp: Date.now(),
+                        size: mediaDataLocal.length
+                    };
+                    localStorage.setItem('salink_post_media', JSON.stringify(mediaStore));
+                } catch(e) {}
             }
         }
-    }
 
-    const post = {
-        id: postId,
-        userId: currentUser.username,
-        userFullName: currentUser.fullName,
-        userGender: currentUser.gender || 'male',
-        userProfilePic: currentUser.profilePicture || '',
-        text: text || '',
-        mediaType: mediaType,
-        gdriveId: gdriveData ? gdriveData.id : '',
-        gdriveImageUrl: gdriveData ? gdriveData.imageUrl : '',
-        gdriveVideoEmbed: gdriveData ? gdriveData.videoEmbed : '',
-        gdriveThumbnail: gdriveData ? gdriveData.thumbnail : '',
-        mediaId: mediaIdLocal,
-        mediaData: '',
-        timestamp: Date.now(),
-        likes: '[]',
-        comments: '[]',
-        viewerCount: 0,
-        isSpecial: isSpecial || false,
-        specialType: isSpecial && specialData ? specialData.type : '',
-        specialLocation: isSpecial && specialData ? specialData.location : '',
-        specialAddress: isSpecial && specialData ? specialData.address : '',
-        latitude: isSpecial && specialData ? specialData.latitude : '',
-        longitude: isSpecial && specialData ? specialData.longitude : '',
-        mapsURL: isSpecial && specialData ? specialData.mapsURL : '',
-        postType: isSpecial ? 'khusus' : 'biasa',
-        country: currentUser.country || '',
-        province: currentUser.province || '',
-        city: currentUser.city || '',
-        district: currentUser.district || '',
-        village: currentUser.village || '',
-        address: currentUser.address || ''
-    };
-
-    posts.unshift(post);
-    safeSavePosts(posts);
-    renderPosts();
-
-    apiSavePost(post).then(ok => { if (ok) console.log('✅ [createPost] Post saved:', postId); });
-
-    if (isSpecial && specialData) {
-        const emPayload = {
-            id: emergencyId,
-            type: specialData.type,
-            title: EMERGENCY_LABELS[specialData.type],
-            sender: currentUser.fullName,
-            senderUsername: currentUser.username,
-            senderPhone: currentUser.phone || '',
-            location: specialData.location,
-            address: specialData.address,
-            latitude: specialData.latitude,
-            longitude: specialData.longitude,
-            mapsURL: specialData.mapsURL,
-            description: text,
-            status: 'active',
+        const post = {
+            id: postId,
+            userId: currentUser.username,
+            userFullName: currentUser.fullName,
+            userGender: currentUser.gender || 'male',
+            userProfilePic: currentUser.profilePicture || '',
+            text: text || '',
+            mediaType: mediaType,
+            gdriveId: gdriveData ? gdriveData.id : '',
+            gdriveImageUrl: gdriveData ? gdriveData.imageUrl : '',
+            gdriveVideoEmbed: gdriveData ? gdriveData.videoEmbed : '',
+            gdriveThumbnail: gdriveData ? gdriveData.thumbnail : '',
+            mediaId: mediaIdLocal,
+            mediaData: '',
+            timestamp: Date.now(),
+            likes: '[]',
+            comments: '[]',
+            viewerCount: 0,
+            isSpecial: isSpecial || false,
+            specialType: isSpecial && specialData ? specialData.type : '',
+            specialLocation: isSpecial && specialData ? specialData.location : '',
+            specialAddress: isSpecial && specialData ? specialData.address : '',
+            latitude: isSpecial && specialData ? specialData.latitude : '',
+            longitude: isSpecial && specialData ? specialData.longitude : '',
+            mapsURL: isSpecial && specialData ? specialData.mapsURL : '',
+            postType: isSpecial ? 'khusus' : 'biasa',
+            country: currentUser.country || '',
             province: currentUser.province || '',
             city: currentUser.city || '',
             district: currentUser.district || '',
-            village: currentUser.village || ''
+            village: currentUser.village || '',
+            address: currentUser.address || ''
         };
-        apiSaveEmergency(emPayload).then(ok => {
-            if (ok) console.log('✅ [createPost] Emergency saved:', emergencyId);
-        });
 
-        const notifPayload = {
-            id: notifId,
-            type: specialData.type,
-            title: EMERGENCY_LABELS[specialData.type] + ' — ' + (text.substring(0, 50)),
-            message: text.substring(0, 200),
-            sender: currentUser.fullName,
-            senderUsername: currentUser.username,
-            link: DETAIL_URL + '?id=' + encodeURIComponent(emergencyId),
-            postId: postId,
-            timestamp: new Date().toISOString(),
-            read: 'FALSE',
-            soundKey: specialData.type
-        };
-        apiCall('save_notification', notifPayload).catch(e => console.warn('⚠️ Notification save failed:', e));
+        posts.unshift(post);
+        safeSavePosts(posts);
+        renderPosts();
 
-        triggerLocalEmergencyVisual(emergencyId, specialData.type, currentUser.fullName, specialData.location, text);
+        apiSavePost(post).then(ok => { if (ok) console.log('✅ Post saved:', postId); });
 
-        if (typeof SalinkEmergency !== 'undefined' && SalinkEmergency &&
-            typeof SalinkEmergency.triggerGridAlarmFromPost === 'function') {
-            setTimeout(() => {
-                SalinkEmergency.triggerGridAlarmFromPost(specialData.type, true);
-            }, 500);
+        if (isSpecial && specialData) {
+            const emPayload = {
+                id: emergencyId,
+                type: specialData.type,
+                title: EMERGENCY_LABELS[specialData.type],
+                sender: currentUser.fullName,
+                senderUsername: currentUser.username,
+                senderPhone: currentUser.phone || '',
+                location: specialData.location,
+                address: specialData.address,
+                latitude: specialData.latitude,
+                longitude: specialData.longitude,
+                mapsURL: specialData.mapsURL,
+                description: text,
+                status: 'active',
+                province: currentUser.province || '',
+                city: currentUser.city || '',
+                district: currentUser.district || '',
+                village: currentUser.village || ''
+            };
+            apiSaveEmergency(emPayload);
+
+            const notifPayload = {
+                id: notifId,
+                type: specialData.type,
+                title: EMERGENCY_LABELS[specialData.type] + ' — ' + (text.substring(0, 50)),
+                message: text.substring(0, 200),
+                sender: currentUser.fullName,
+                senderUsername: currentUser.username,
+                link: DETAIL_URL + '?id=' + encodeURIComponent(emergencyId),
+                postId: postId,
+                timestamp: new Date().toISOString(),
+                read: 'FALSE',
+                soundKey: specialData.type
+            };
+            apiCall('save_notification', notifPayload);
+
+            triggerLocalEmergencyVisual(emergencyId, specialData.type, currentUser.fullName, specialData.location, text);
+        } else {
+            playRegularSound();
+            showToast('📝', 'Postingan baru berhasil', 'fa-check-circle');
         }
-    } else {
-        playRegularSound();
-        showToast('📝', 'Postingan baru berhasil', 'fa-check-circle');
-    }
 
-    broadcastSync('new_post', { id: postId });
+        broadcastSync('new_post', { id: postId });
 
-    // Reset form
-    const pi = document.getElementById('postInput'); if (pi) pi.value = '';
-    const pst = document.getElementById('postSpecialText'); if (pst) pst.value = '';
-    const mu = document.getElementById('mediaUpload'); if (mu) mu.value = '';
-    const mp = document.getElementById('mediaPreview'); if (mp) mp.style.display = 'none';
-    const ps = document.getElementById('postSubmit'); if (ps) ps.disabled = true;
-    const sel = document.getElementById('postTypeSelect');
-    if (sel) sel.value = 'biasa';
-    currentPostType = 'biasa';
-    const psf = document.getElementById('postSpecialFields'); if (psf) psf.classList.remove('active');
-    const pbf = document.getElementById('postBiasaForm'); if (pbf) pbf.style.display = 'block';
-    currentGpsData = null;
-    const gpsResult = document.getElementById('gpsLocationResult');
-    if (gpsResult) gpsResult.classList.remove('active');
-    const gpsBtn = document.getElementById('gpsLocationBtn');
-    if (gpsBtn) {
-        gpsBtn.style.background = '';
-        const txt = document.getElementById('gpsLocationBtnText');
-        if (txt) txt.textContent = '📍 Ambil Lokasi Saya';
-    }
-}
-
-function cleanupOldMedia() {
-    try {
-        const mediaStore = JSON.parse(localStorage.getItem('salink_post_media') || '{}');
-        const entries = Object.keys(mediaStore).map(k => ({ id: k, ts: mediaStore[k].timestamp || 0 }));
-        entries.sort((a, b) => a.ts - b.ts);
-        const toDelete = entries.slice(0, Math.ceil(entries.length * 0.3));
-        toDelete.forEach(e => delete mediaStore[e.id]);
-        localStorage.setItem('salink_post_media', JSON.stringify(mediaStore));
-        console.log('🧹 [cleanupOldMedia] Deleted', toDelete.length, 'old media entries');
-    } catch(e) {
-        console.error('❌ cleanupOldMedia error:', e.message);
-    }
-       } finally {
-        // ✅ v9.0: Reset flag setelah selesai (sukses/gagal)
+        // Reset form
+        const pi = document.getElementById('postInput'); if (pi) pi.value = '';
+        const pst = document.getElementById('postSpecialText'); if (pst) pst.value = '';
+        const mu = document.getElementById('mediaUpload'); if (mu) mu.value = '';
+        const mp = document.getElementById('mediaPreview'); if (mp) mp.style.display = 'none';
+        const sel = document.getElementById('postTypeSelect');
+        if (sel) sel.value = 'biasa';
+        currentPostType = 'biasa';
+        const psf = document.getElementById('postSpecialFields'); if (psf) psf.classList.remove('active');
+        const pbf = document.getElementById('postBiasaForm'); if (pbf) pbf.style.display = 'block';
+        currentGpsData = null;
+        const gpsResult = document.getElementById('gpsLocationResult');
+        if (gpsResult) gpsResult.classList.remove('active');
+        const gpsBtn = document.getElementById('gpsLocationBtn');
+        if (gpsBtn) {
+            gpsBtn.style.background = '';
+            const txt = document.getElementById('gpsLocationBtnText');
+            if (txt) txt.textContent = '📍 Ambil Lokasi Saya';
+        }
+    } finally {
         window._salinkPostingInProgress = false;
         const btn = document.getElementById('postSubmit');
         if (btn) {
-            btn.disabled = true; // Tetap disabled karena form sudah kosong
+            btn.disabled = true;
             btn.textContent = 'Posting';
         }
-        console.log('✅ [createPost] Flag reset, siap posting lagi');
-    } 
-  }
-       
+    }
+}
+
 // ====================================================================
 // 24. TRIGGER LOCAL EMERGENCY VISUAL
 // ====================================================================
@@ -3449,10 +3319,7 @@ function getWeeklyChartData() {
     return { labels: labels, fire: fire, medical: medical, crime: crime, disaster: disaster };
 }
 function initAllCharts() {
-    if (typeof Chart === 'undefined') {
-        console.warn('⚠️ Chart.js belum di-load');
-        return;
-    }
+    if (typeof Chart === 'undefined') return;
 
     const colors = getChartColors();
     const data = getChartData();
@@ -3464,10 +3331,8 @@ function initAllCharts() {
 
     const pieCtx = document.getElementById('pieChart');
     if (pieCtx) {
-        if (chartInstances.pie) {
-            chartInstances.pie.data.datasets[0].data = values;
-            chartInstances.pie.update();
-        } else {
+        if (chartInstances.pie) { chartInstances.pie.data.datasets[0].data = values; chartInstances.pie.update(); }
+        else {
             chartInstances.pie = new Chart(pieCtx, {
                 type: 'pie',
                 data: { labels: labels, datasets: [{ data: values, backgroundColor: bgColors, borderColor: '#fff', borderWidth: 2 }] },
@@ -3478,13 +3343,11 @@ function initAllCharts() {
 
     const barCtx = document.getElementById('barChart');
     if (barCtx) {
-        if (chartInstances.bar) {
-            chartInstances.bar.data.datasets[0].data = values;
-            chartInstances.bar.update();
-        } else {
+        if (chartInstances.bar) { chartInstances.bar.data.datasets[0].data = values; chartInstances.bar.update(); }
+        else {
             chartInstances.bar = new Chart(barCtx, {
                 type: 'bar',
-                data: { labels: labels, datasets: [{ label: 'Jumlah Kejadian', data: values, backgroundColor: bgColors, borderRadius: 6 }] },
+                data: { labels: labels, datasets: [{ label: 'Jumlah', data: values, backgroundColor: bgColors, borderRadius: 6 }] },
                 options: { responsive: true, maintainAspectRatio: true, plugins: { legend: { display: false } }, scales: { y: { beginAtZero: true, grid: { color: colors.grid }, ticks: { color: colors.text, stepSize: 1 } }, x: { grid: { display: false }, ticks: { color: colors.text } } } }
             });
         }
@@ -3492,14 +3355,8 @@ function initAllCharts() {
 
     const lineCtx = document.getElementById('lineChart');
     if (lineCtx) {
-        if (chartInstances.line) {
-            chartInstances.line.data.labels = weekly.labels;
-            chartInstances.line.data.datasets[0].data = weekly.fire;
-            chartInstances.line.data.datasets[1].data = weekly.medical;
-            chartInstances.line.data.datasets[2].data = weekly.crime;
-            chartInstances.line.data.datasets[3].data = weekly.disaster;
-            chartInstances.line.update();
-        } else {
+        if (chartInstances.line) { chartInstances.line.data.labels = weekly.labels; chartInstances.line.data.datasets[0].data = weekly.fire; chartInstances.line.data.datasets[1].data = weekly.medical; chartInstances.line.data.datasets[2].data = weekly.crime; chartInstances.line.data.datasets[3].data = weekly.disaster; chartInstances.line.update(); }
+        else {
             chartInstances.line = new Chart(lineCtx, {
                 type: 'line',
                 data: { labels: weekly.labels, datasets: [
@@ -3515,14 +3372,8 @@ function initAllCharts() {
 
     const areaCtx = document.getElementById('areaChart');
     if (areaCtx) {
-        if (chartInstances.area) {
-            chartInstances.area.data.labels = weekly.labels;
-            chartInstances.area.data.datasets[0].data = weekly.fire;
-            chartInstances.area.data.datasets[1].data = weekly.medical;
-            chartInstances.area.data.datasets[2].data = weekly.crime;
-            chartInstances.area.data.datasets[3].data = weekly.disaster;
-            chartInstances.area.update();
-        } else {
+        if (chartInstances.area) { chartInstances.area.data.labels = weekly.labels; chartInstances.area.data.datasets[0].data = weekly.fire; chartInstances.area.data.datasets[1].data = weekly.medical; chartInstances.area.data.datasets[2].data = weekly.crime; chartInstances.area.data.datasets[3].data = weekly.disaster; chartInstances.area.update(); }
+        else {
             chartInstances.area = new Chart(areaCtx, {
                 type: 'line',
                 data: { labels: weekly.labels, datasets: [
@@ -3538,10 +3389,8 @@ function initAllCharts() {
 
     const doughnutCtx = document.getElementById('doughnutChart');
     if (doughnutCtx) {
-        if (chartInstances.doughnut) {
-            chartInstances.doughnut.data.datasets[0].data = values;
-            chartInstances.doughnut.update();
-        } else {
+        if (chartInstances.doughnut) { chartInstances.doughnut.data.datasets[0].data = values; chartInstances.doughnut.update(); }
+        else {
             chartInstances.doughnut = new Chart(doughnutCtx, {
                 type: 'doughnut',
                 data: { labels: labels, datasets: [{ data: values, backgroundColor: bgColors, borderColor: '#fff', borderWidth: 3, hoverOffset: 10 }] },
@@ -3552,8 +3401,6 @@ function initAllCharts() {
 
     updateGaugeChart();
     updateHeatmap();
-
-    console.log('📊 [initAllCharts] Rendered. Posts:', posts.length);
 }
 function switchChart(type) {
     document.querySelectorAll('.chart-nav-btn').forEach(b => b.classList.toggle('active', b.dataset.chart === type));
@@ -3663,8 +3510,6 @@ function handleEmergencyClick(e) {
     if (!currentUser) { redirectToLogin(); return; }
 
     if (typeof unlockAudio === 'function') unlockAudio();
-
-    // ✅ Izinkan auto-trigger HANYA setelah user klik grid
     window._salinkAllowAutoTrigger = true;
 
     const hasSalinkEmergency = (typeof SalinkEmergency !== 'undefined' && SalinkEmergency);
@@ -3683,7 +3528,6 @@ function handleEmergencyClick(e) {
         return;
     }
 
-    console.warn('⚠️ [handleEmergencyClick] SalinkEmergency tidak tersedia');
     showToast('⚠️ Error', 'Sistem alarm tidak tersedia', 'fa-exclamation-triangle');
 }
 
@@ -3770,7 +3614,7 @@ function applyPreviewMode() {
         const pts = document.getElementById('postTypeSelect'); if (pts) pts.disabled = false;
         const gps = document.getElementById('gpsLocationBtn'); if (gps) gps.disabled = false;
         document.querySelectorAll('.emergency-btn').forEach(b => b.style.opacity = '1');
-        setTimeout(() => { try { validatePost(); } catch(e) { console.warn('validatePost error:', e); } }, 100);
+        setTimeout(() => { try { validatePost(); } catch(e) {} }, 100);
     }
 }
 function setupLoginGuard() {
@@ -3802,8 +3646,6 @@ function setupLoginGuard() {
 // 30. LOAD DATA
 // ====================================================================
 async function loadData() {
-    console.log('📊 [loadData] Step 1: Load from localStorage (instant)');
-
     let localPosts = [];
     try { localPosts = JSON.parse(localStorage.getItem('salink_posts') || '[]'); } catch(e) { localPosts = []; }
 
@@ -3838,13 +3680,7 @@ async function loadData() {
     updateNotifBadge();
     updateInviteBadge();
     updateStatsCards();
-    if (chartInstances.pie || chartInstances.bar) {
-        updateAllCharts();
-    }
-
-    console.log('✅ [loadData] Local render selesai. Posts:', posts.length, '| Ems:', validLocalEms.length, '| Users:', allUsers.length);
-
-    console.log('🌐 [loadData] Step 2: Fetch API in background...');
+    if (chartInstances.pie || chartInstances.bar) updateAllCharts();
 
     try {
         const results = await Promise.allSettled([
@@ -3890,22 +3726,14 @@ async function loadData() {
         notifications = Array.from(notifMap.values()).sort((a, b) => (b.timestamp || 0) - (a.timestamp || 0));
         try { localStorage.setItem('salink_notifications', JSON.stringify(notifications)); } catch(e) {}
 
-        if (results[3].status === 'fulfilled' && results[3].value) {
-            statistics = results[3].value;
-        }
+        if (results[3].status === 'fulfilled' && results[3].value) statistics = results[3].value;
 
         let apiUsers = (results[4].status === 'fulfilled' && Array.isArray(results[4].value)) ? results[4].value : [];
         const userMap = new Map();
         allUsers.forEach(u => { if (u && u.username) userMap.set(u.username, u); });
         apiUsers.forEach(u => { if (u && u.username) userMap.set(u.username, u); });
         allUsers = Array.from(userMap.values());
-        try {
-            if (allUsers.length > 0) {
-                localStorage.setItem('salink_users', JSON.stringify(allUsers));
-            }
-        } catch(e) {}
-
-        console.log('ℹ️ [loadData] Auto-trigger disabled. Emergency hanya tampil di hologram.');
+        try { if (allUsers.length > 0) localStorage.setItem('salink_users', JSON.stringify(allUsers)); } catch(e) {}
 
         renderPosts();
         renderHologram();
@@ -3914,11 +3742,8 @@ async function loadData() {
         updateInviteBadge();
         updateStatsCards();
         updateAllCharts();
-
-        console.log('✅ [loadData] API render selesai. Posts:', posts.length, '| Ems:', mergedEms.length, '| Users:', allUsers.length);
-
     } catch (err) {
-        console.warn('⚠️ [loadData] API fetch error (tetap pakai data lokal):', err.message);
+        console.warn('⚠️ [loadData] API error:', err.message);
     }
 }
 
@@ -4015,12 +3840,7 @@ function renderSearchDefaultView() {
             return '<div class="trending-item" onclick="goToPost(\'' + escapeAttr(p.id) + '\')"><div class="trending-rank ' + rankClass + '">#' + (idx + 1) + '</div><div class="trending-info"><div class="trending-title">' + escapeHTML(p.text ? p.text.substring(0, 50) : 'Postingan media') + '</div><div class="trending-sub">' + escapeHTML(p.userFullName) + ' • ❤️ ' + likes + ' suka</div></div><i class="fas fa-chevron-right result-arrow"></i></div>';
         }).join('');
     }
-    const nearby = getNearbyEmergencies(5);
-    if (nearby.length > 0) {
-        html += '<div class="search-section-title"><span>📍 Emergency Dekat Anda (5km)</span><span class="count-pill">' + nearby.length + '</span></div>';
-        html += nearby.slice(0, 3).map(em => '<div class="search-result-item" onclick="goToEmergency(\'' + escapeAttr(em.id) + '\')"><div class="result-icon ' + em.type + '">' + (EMERGENCY_ICONS[em.type] || '🚨') + '</div><div class="result-info"><div class="result-title">' + escapeHTML(EMERGENCY_LABELS[em.type]) + '</div><div class="result-sub">📍 ' + escapeHTML(em.location || '-') + ' • ' + em.distanceKm.toFixed(1) + ' km</div></div><div class="result-time">' + getTimeAgo(em.timestamp) + '</div></div>').join('');
-    }
-    if (!html) html = '<div class="search-empty-state"><div class="empty-big-icon">🔍</div><h4>Mulai Pencarian</h4><p>Ketik nama pengguna, isi postingan, lokasi, atau jenis emergency untuk mencari di seluruh SALINK.</p></div>';
+    if (!html) html = '<div class="search-empty-state"><div class="empty-big-icon">🔍</div><h4>Mulai Pencarian</h4><p>Ketik nama pengguna, isi postingan, lokasi, atau jenis emergency.</p></div>';
     container.innerHTML = html;
 }
 function switchSearchTab(tab, btnEl) {
@@ -4079,32 +3899,6 @@ function getTrendingPosts() {
     });
     return todayPosts.slice(0, 5);
 }
-function getNearbyEmergencies(radiusKm) {
-    if (!userLat || !userLng) {
-        const savedLat = localStorage.getItem('salink_user_lat');
-        const savedLng = localStorage.getItem('salink_user_lng');
-        if (savedLat && savedLng) { userLat = parseFloat(savedLat); userLng = parseFloat(savedLng); }
-    }
-    if (!userLat || !userLng) return [];
-    const ems = getActiveEmergencies();
-    const results = [];
-    ems.forEach(em => {
-        if (!em.coords || em.coords.indexOf(',') === -1) return;
-        const parts = em.coords.split(',').map(s => parseFloat(s.trim()));
-        if (isNaN(parts[0]) || isNaN(parts[1])) return;
-        const d = haversineKm(userLat, userLng, parts[0], parts[1]);
-        if (d <= radiusKm) results.push(Object.assign({}, em, { distanceKm: d }));
-    });
-    results.sort((a, b) => a.distanceKm - b.distanceKm);
-    return results;
-}
-function haversineKm(lat1, lon1, lat2, lon2) {
-    const R = 6371;
-    const dLat = (lat2 - lat1) * Math.PI / 180;
-    const dLon = (lon2 - lon1) * Math.PI / 180;
-    const a = Math.sin(dLat/2) * Math.sin(dLat/2) + Math.cos(lat1 * Math.PI / 180) * Math.cos(lat2 * Math.PI / 180) * Math.sin(dLon/2) * Math.sin(dLon/2);
-    return R * 2 * Math.atan2(Math.sqrt(a), Math.sqrt(1 - a));
-}
 function performSearch(query) {
     const q = query.trim().toLowerCase();
     if (!q) { const sar = document.getElementById('searchActiveResults'); if (sar) sar.style.display = 'none'; const sdv = document.getElementById('searchDefaultView'); if (sdv) sdv.style.display = 'block'; return; }
@@ -4139,7 +3933,7 @@ function performSearch(query) {
             let likes = 0;
             try { likes = JSON.parse(p.likes || '[]').length; } catch(e) {}
             const textPreview = p.text ? p.text.substring(0, 60) : 'Postingan media';
-            return '<div class="search-result-item" onclick="goToPost(\'' + escapeAttr(p.id) + '\')"><div class="result-icon ' + iconCls + '">' + icon + '</div><div class="result-info"><div class="result-title">' + highlightText(textPreview, query) + '</div><div class="result-sub">' + escapeHTML(p.userFullName) + ' • ❤️ ' + likes + ' • ' + (isEm ? EMERGENCY_LABELS[p.specialType] : 'Biasa') + '</div></div><div class="result-time">' + getTimeAgo(p.timestamp) + '</div></div>';
+            return '<div class="search-result-item" onclick="goToPost(\'' + escapeAttr(p.id) + '\')"><div class="result-icon ' + iconCls + '">' + icon + '</div><div class="result-info"><div class="result-title">' + highlightText(textPreview, query) + '</div><div class="result-sub">' + escapeHTML(p.userFullName) + ' • ❤️ ' + likes + '</div></div><div class="result-time">' + getTimeAgo(p.timestamp) + '</div></div>';
         }).join('');
     }
     if (showEm && matchedEm.length > 0) {
@@ -4147,20 +3941,20 @@ function performSearch(query) {
         html += '<div class="search-section-title"><span>🚨 Emergency</span><span class="count-pill">' + matchedEm.length + '</span></div>';
         html += matchedEm.slice(0, 10).map(em => '<div class="search-result-item" onclick="goToEmergency(\'' + escapeAttr(em.id) + '\')"><div class="result-icon ' + em.type + '">' + (EMERGENCY_ICONS[em.type] || '🚨') + '</div><div class="result-info"><div class="result-title">' + highlightText(EMERGENCY_LABELS[em.type], query) + '</div><div class="result-sub">📍 ' + highlightText(em.location || '-', query) + ' • ' + escapeHTML(em.sender) + '</div></div><div class="result-time">' + getTimeAgo(em.timestamp) + '</div></div>').join('');
     }
-    if (totalCount === 0) html = '<div class="search-empty-state"><div class="empty-big-icon">🔍</div><h4>Tidak ditemukan hasil untuk "' + escapeHTML(query) + '"</h4><p>Coba kata kunci lain atau periksa ejaan Anda.</p></div>';
+    if (totalCount === 0) html = '<div class="search-empty-state"><div class="empty-big-icon">🔍</div><h4>Tidak ditemukan hasil</h4><p>Coba kata kunci lain.</p></div>';
     if (sar) sar.innerHTML = html;
 }
 function searchUsers(q) {
     let users = allUsers.length > 0 ? allUsers : JSON.parse(localStorage.getItem('salink_users') || '[]');
-    return users.filter(u => (u.fullName || '').toLowerCase().indexOf(q) !== -1 || (u.username || '').toLowerCase().indexOf(q) !== -1 || (u.email || '').toLowerCase().indexOf(q) !== -1 || (u.city || '').toLowerCase().indexOf(q) !== -1 || (u.province || '').toLowerCase().indexOf(q) !== -1 || (u.country || '').toLowerCase().indexOf(q) !== -1);
+    return users.filter(u => (u.fullName || '').toLowerCase().indexOf(q) !== -1 || (u.username || '').toLowerCase().indexOf(q) !== -1 || (u.email || '').toLowerCase().indexOf(q) !== -1);
 }
 function searchPosts(q) {
-    return posts.filter(p => (p.text || '').toLowerCase().indexOf(q) !== -1 || (p.userFullName || '').toLowerCase().indexOf(q) !== -1 || (p.specialLocation || '').toLowerCase().indexOf(q) !== -1 || (p.specialAddress || '').toLowerCase().indexOf(q) !== -1);
+    return posts.filter(p => (p.text || '').toLowerCase().indexOf(q) !== -1 || (p.userFullName || '').toLowerCase().indexOf(q) !== -1 || (p.specialLocation || '').toLowerCase().indexOf(q) !== -1);
 }
 function searchEmergencies(q) {
     let ems = getActiveEmergencies();
     if (searchEmergencyFilter !== 'all') ems = ems.filter(e => e.type === searchEmergencyFilter);
-    return ems.filter(e => (e.location || '').toLowerCase().indexOf(q) !== -1 || (e.address || '').toLowerCase().indexOf(q) !== -1 || (e.text || '').toLowerCase().indexOf(q) !== -1 || (e.sender || '').toLowerCase().indexOf(q) !== -1 || (EMERGENCY_LABELS[e.type] || '').toLowerCase().indexOf(q) !== -1);
+    return ems.filter(e => (e.location || '').toLowerCase().indexOf(q) !== -1 || (e.text || '').toLowerCase().indexOf(q) !== -1 || (e.sender || '').toLowerCase().indexOf(q) !== -1);
 }
 function goToUser(username) {
     addRecentSearch(username);
@@ -4179,7 +3973,7 @@ function goToPost(postId) {
             el.style.boxShadow = '0 0 30px rgba(88,166,255,0.5)';
             el.style.borderColor = 'var(--accent-blue)';
             setTimeout(() => { el.style.boxShadow = ''; el.style.borderColor = ''; }, 3000);
-        } else showToast('ℹ️ Info', 'Postingan tidak ditemukan di halaman ini', 'fa-info-circle');
+        }
     }, 300);
 }
 function goToEmergency(emergencyId) {
@@ -4232,11 +4026,8 @@ function checkURLParams() {
 
 function setupVisibilityDetection() {
     document.addEventListener('visibilitychange', () => {
-        if (!document.hidden) {
-            resetIdleTimer();
-        } else {
-            isIdleStandby = true;
-        }
+        if (!document.hidden) resetIdleTimer();
+        else isIdleStandby = true;
     });
 }
 
@@ -4327,58 +4118,39 @@ function setupPostInput() {
     }
 
     if (submitBtn && !submitBtn._salinkPostSetup) {
-    submitBtn._salinkPostSetup = true;
-    submitBtn.addEventListener('click', async function(e) {
-        e.preventDefault(); 
-        e.stopPropagation();
-        
-        // ✅ v9.0: Cek flag anti-duplikat
-        if (window._salinkPostingInProgress) {
-            console.log('⚠️ [submitBtn] Posting sedang berjalan, skip');
-            return;
-        }
-        
-        if (isPreviewMode) { showPreviewOverlay(); return; }
-        if (!currentUser) { redirectToLogin(); return; }
-        
-        const val = document.getElementById('postTypeSelect') ? document.getElementById('postTypeSelect').value : 'biasa';
-        const mapping = POST_TYPE_MAP[val] || POST_TYPE_MAP['biasa'];
-        const isSpecial = mapping.isSpecial;
-        const specialType = mapping.specialType;
-        const text = isSpecial 
-            ? (document.getElementById('postSpecialText') ? document.getElementById('postSpecialText').value.trim() : '') 
-            : (document.getElementById('postInput') ? document.getElementById('postInput').value.trim() : '');
-        const fileEl = document.getElementById('mediaUpload');
-        const file = fileEl && fileEl.files ? fileEl.files[0] : null;
-        
-        if (!text && !file) { 
-            showToast('⚠️ Perhatian', 'Isi teks atau upload media', 'fa-exclamation-triangle'); 
-            return; 
-        }
-        
-        let specialData = null;
-        if (isSpecial) {
-            if (!currentGpsData) { 
-                showToast('⚠️ Perhatian', 'Tekan "Ambil Lokasi Saya" dulu', 'fa-exclamation-triangle'); 
-                return; 
+        submitBtn._salinkPostSetup = true;
+        submitBtn.addEventListener('click', async function(e) {
+            e.preventDefault(); e.stopPropagation();
+            if (window._salinkPostingInProgress) { return; }
+            if (isPreviewMode) { showPreviewOverlay(); return; }
+            if (!currentUser) { redirectToLogin(); return; }
+            const val = document.getElementById('postTypeSelect') ? document.getElementById('postTypeSelect').value : 'biasa';
+            const mapping = POST_TYPE_MAP[val] || POST_TYPE_MAP['biasa'];
+            const isSpecial = mapping.isSpecial;
+            const specialType = mapping.specialType;
+            const text = isSpecial ? (document.getElementById('postSpecialText') ? document.getElementById('postSpecialText').value.trim() : '') : (document.getElementById('postInput') ? document.getElementById('postInput').value.trim() : '');
+            const fileEl = document.getElementById('mediaUpload');
+            const file = fileEl && fileEl.files ? fileEl.files[0] : null;
+            if (!text && !file) { showToast('⚠️ Perhatian', 'Isi teks atau upload media', 'fa-exclamation-triangle'); return; }
+            let specialData = null;
+            if (isSpecial) {
+                if (!currentGpsData) { showToast('⚠️ Perhatian', 'Tekan "Ambil Lokasi Saya" dulu', 'fa-exclamation-triangle'); return; }
+                specialData = {
+                    type: specialType,
+                    location: currentGpsData.address || ('Koordinat: ' + currentGpsData.lat + ', ' + currentGpsData.lng),
+                    address: currentGpsData.address,
+                    latitude: currentGpsData.lat,
+                    longitude: currentGpsData.lng,
+                    mapsURL: currentGpsData.mapsURL,
+                    coords: currentGpsData.lat + ', ' + currentGpsData.lng
+                };
             }
-            specialData = {
-                type: specialType,
-                location: currentGpsData.address || ('Koordinat: ' + currentGpsData.lat + ', ' + currentGpsData.lng),
-                address: currentGpsData.address,
-                latitude: currentGpsData.lat,
-                longitude: currentGpsData.lng,
-                mapsURL: currentGpsData.mapsURL,
-                coords: currentGpsData.lat + ', ' + currentGpsData.lng
-            };
-        }
-        
-        await createPost(text, file, isSpecial, specialData);
-    });
-    console.log('✅ [setupPostInput] Submit handler attached');
-}
+            await createPost(text, file, isSpecial, specialData);
+        });
+    }
     validatePost();
 }
+
 function validatePost() {
     const selectEl = document.getElementById('postTypeSelect');
     const val = selectEl ? selectEl.value : 'biasa';
@@ -4390,20 +4162,10 @@ function validatePost() {
     const mediaInput = document.getElementById('mediaUpload');
     const hasFile = mediaInput && mediaInput.files && mediaInput.files.length > 0;
     const btn = document.getElementById('postSubmit');
-    
     if (!btn) return;
-    
-    // ✅ v9.0: Kalau sedang posting, tetap disabled
-    if (window._salinkPostingInProgress) {
-        btn.disabled = true;
-        return;
-    }
-    
-    if (isPreviewMode) { 
-        btn.disabled = true; 
-        return; 
-    }
-    
+
+    if (window._salinkPostingInProgress) { btn.disabled = true; return; }
+    if (isPreviewMode) { btn.disabled = true; return; }
     if (isSpecial) {
         btn.disabled = !((text || hasFile) && currentGpsData);
     } else {
@@ -4463,34 +4225,164 @@ function setupViewOnlyProtection() {
         }
     });
     document.addEventListener('dragstart', function(e) {
-        if (e.target.tagName === 'IMG') {
-            e.preventDefault();
-            return false;
-        }
+        if (e.target.tagName === 'IMG') { e.preventDefault(); return false; }
     });
-    document.addEventListener('keydown', function(e) {
-        if (e.ctrlKey || e.metaKey) {
-            if (['s', 'p', 'u'].indexOf(e.key.toLowerCase()) !== -1) {
-                const hasMedia = document.querySelector('img[src*="googleusercontent"], img[src*="drive.google"], iframe[src*="drive.google.com"]');
-                if (hasMedia) {
-                    e.preventDefault();
-                    showToast('🔒 View Only', 'Aksi ini dinonaktifkan', 'fa-lock');
-                    return false;
-                }
-            }
-        }
-    });
-    console.log('✅ [View-Only] Protection activated');
 }
 
 // ====================================================================
-// 39. INIT
+// 39. CLEAR CACHE SYSTEM
+// ====================================================================
+function formatBytes(bytes) {
+    if (!bytes || bytes < 0) return '0 B';
+    if (bytes < 1024) return bytes + ' B';
+    if (bytes < 1024 * 1024) return (bytes / 1024).toFixed(1) + ' KB';
+    return (bytes / (1024 * 1024)).toFixed(2) + ' MB';
+}
+function getStorageUsage() {
+    let total = 0;
+    const breakdown = {};
+    try {
+        Object.keys(localStorage).forEach(key => {
+            const val = localStorage.getItem(key) || '';
+            const size = (key.length + val.length) * 2;
+            total += size;
+            breakdown[key] = size;
+        });
+    } catch(e) {}
+    const MAX = 5 * 1024 * 1024;
+    const percent = Math.min(100, Math.round((total / MAX) * 100));
+    return { total, breakdown, percent, max: MAX };
+}
+function getMediaStoreSize() {
+    try { return (localStorage.getItem('salink_post_media') || '{}').length * 2; } catch(e) { return 0; }
+}
+function getOldDataSize() {
+    let size = 0;
+    try {
+        const mediaStore = JSON.parse(localStorage.getItem('salink_post_media') || '{}');
+        const sevenDaysAgo = Date.now() - 7 * 24 * 60 * 60 * 1000;
+        Object.keys(mediaStore).forEach(id => {
+            const entry = mediaStore[id];
+            if (entry && entry.timestamp && entry.timestamp < sevenDaysAgo) size += (entry.data || '').length * 2;
+        });
+    } catch(e) {}
+    return size;
+}
+function showClearCacheMenu() {
+    const modal = document.getElementById('clearCacheModal');
+    if (!modal) return;
+    updateClearCacheInfo();
+    modal.classList.add('active');
+    document.body.style.overflow = 'hidden';
+}
+function closeClearCacheModal() {
+    const modal = document.getElementById('clearCacheModal');
+    if (modal) modal.classList.remove('active');
+    document.body.style.overflow = '';
+}
+function updateClearCacheInfo() {
+    const usage = getStorageUsage();
+    const mediaSize = getMediaStoreSize();
+    const oldSize = getOldDataSize();
+    const bar = document.getElementById('ccStorageBar');
+    const pct = document.getElementById('ccStoragePercent');
+    const totalEl = document.getElementById('ccTotalSize');
+    const mediaEl = document.getElementById('ccMediaSize');
+    const oldEl = document.getElementById('ccOldSize');
+    const detailEl = document.getElementById('ccTotalDetail');
+    const headerInfo = document.getElementById('storageInfo');
+    if (bar) bar.style.width = usage.percent + '%';
+    if (pct) pct.textContent = usage.percent + '%';
+    if (totalEl) totalEl.textContent = 'Terpakai: ' + formatBytes(usage.total) + ' dari ~5 MB';
+    if (mediaEl) mediaEl.textContent = '📦 ' + formatBytes(mediaSize);
+    if (oldEl) oldEl.textContent = '📦 ' + formatBytes(oldSize);
+    if (detailEl) detailEl.textContent = '📦 ' + formatBytes(usage.total) + ' akan dihapus';
+    if (headerInfo) headerInfo.textContent = formatBytes(usage.total) + ' (' + usage.percent + '%)';
+}
+function showStorageDetail() {
+    const usage = getStorageUsage();
+    let detail = '📊 DETAIL PENYIMPANAN SALINK\n\n';
+    detail += 'Total: ' + formatBytes(usage.total) + '\n';
+    detail += 'Kapasitas: ~' + formatBytes(usage.max) + '\n';
+    detail += 'Terpakai: ' + usage.percent + '%\n\n─── RINCIAN ───\n';
+    const sorted = Object.keys(usage.breakdown).sort((a, b) => usage.breakdown[b] - usage.breakdown[a]);
+    sorted.forEach(key => {
+        const icon = key.indexOf('media') !== -1 ? '🖼️' : key.indexOf('posts') !== -1 ? '📝' : key.indexOf('emergenc') !== -1 ? '🚨' : key.indexOf('notif') !== -1 ? '🔔' : key.indexOf('user') !== -1 ? '👤' : key.indexOf('theme') !== -1 ? '🎨' : '📦';
+        detail += icon + ' ' + key + ': ' + formatBytes(usage.breakdown[key]) + '\n';
+    });
+    alert(detail);
+}
+function clearMediaOnly() {
+    const size = getMediaStoreSize();
+    if (size === 0) { showToast('ℹ️ Info', 'Tidak ada media', 'fa-info-circle'); return; }
+    if (!confirm('🖼️ Bersihkan Media\n\nAkan menghapus ' + formatBytes(size) + ' cache.\n\nAkun & postingan TETAP AMAN.')) return;
+    try {
+        localStorage.removeItem('salink_post_media');
+        showToast('✅ Sukses', 'Media dibersihkan', 'fa-check-circle');
+        setTimeout(() => location.reload(), 1200);
+    } catch(e) {}
+}
+function clearOldData() {
+    const size = getOldDataSize();
+    if (size === 0) { showToast('ℹ️ Info', 'Tidak ada data lama', 'fa-info-circle'); return; }
+    if (!confirm('⏱️ Bersihkan Data Lama\n\nAkan menghapus ' + formatBytes(size) + ' data >7 hari.')) return;
+    try {
+        const sevenDaysAgo = Date.now() - 7 * 24 * 60 * 60 * 1000;
+        const mediaStore = JSON.parse(localStorage.getItem('salink_post_media') || '{}');
+        Object.keys(mediaStore).forEach(id => {
+            const entry = mediaStore[id];
+            if (entry && entry.timestamp && entry.timestamp < sevenDaysAgo) delete mediaStore[id];
+        });
+        localStorage.setItem('salink_post_media', JSON.stringify(mediaStore));
+        let notifs = JSON.parse(localStorage.getItem('salink_notifications') || '[]');
+        notifs = notifs.filter(n => n && n.timestamp && n.timestamp >= sevenDaysAgo);
+        localStorage.setItem('salink_notifications', JSON.stringify(notifs));
+        let ems = JSON.parse(localStorage.getItem('salink_emergencies') || '[]');
+        const now = Date.now();
+        ems = ems.filter(e => {
+            if (!e) return false;
+            let ts = typeof e.timestamp === 'number' ? e.timestamp : new Date(e.timestamp).getTime();
+            if (isNaN(ts)) ts = now;
+            const exp = e.expiresAt || (ts + EMERGENCY_DURATION);
+            return exp > now;
+        });
+        localStorage.setItem('salink_emergencies', JSON.stringify(ems));
+        showToast('✅ Sukses', 'Data lama dibersihkan', 'fa-check-circle');
+        setTimeout(() => location.reload(), 1200);
+    } catch(e) {}
+}
+async function forceSyncData() {
+    if (!confirm('🔄 Sinkronisasi Ulang\n\nAmbil data terbaru?')) return;
+    showToast('🔄 Sync...', 'Mengambil data terbaru', 'fa-sync-alt');
+    try {
+        await loadData();
+        showToast('✅ Sukses', 'Data disinkronkan', 'fa-check-circle');
+    } catch(e) {}
+}
+function clearAllCache() {
+    const usage = getStorageUsage();
+    if (!confirm('⚠️ RESET TOTAL ⚠️\n\nAnda akan menghapus ' + formatBytes(usage.total) + ' data:\n\n✅ Akun\n✅ Semua postingan\n✅ Semua media\n\nLanjutkan?')) return;
+    if (!confirm('🛑 KONFIRMASI KEDUA 🛑\n\nHAPUS SEMUA? Login ulang setelah ini.')) return;
+    try {
+        localStorage.clear();
+        showToast('✅ Sukses', 'Semua data dihapus. Reload...', 'fa-check-circle');
+        setTimeout(() => { window.location.href = 'login-register.html'; }, 1500);
+    } catch(e) {}
+}
+
+window.showClearCacheMenu = showClearCacheMenu;
+window.closeClearCacheModal = closeClearCacheModal;
+window.showStorageDetail = showStorageDetail;
+window.clearMediaOnly = clearMediaOnly;
+window.clearOldData = clearOldData;
+window.forceSyncData = forceSyncData;
+window.clearAllCache = clearAllCache;
+
+// ====================================================================
+// 40. INIT
 // ====================================================================
 document.addEventListener('DOMContentLoaded', async () => {
-    console.log('🚀 SALINK Dashboard v7.0 — Google Drive FINAL FIX');
-
-    // ✅ Tidak preload audio — biar tidak bunyi otomatis
-    // preloadAllAudio();
+    console.log('🚀 SALINK Dashboard v9.0 — FINAL CLEAN');
 
     setupIdleDetection();
     setupVisibilityDetection();
@@ -4504,7 +4396,6 @@ document.addEventListener('DOMContentLoaded', async () => {
     updateUserUI();
     setupLoginGuard();
 
-    lastNotifCheck = parseInt(localStorage.getItem('salink_last_emergency_check') || '0');
     const savedLat = localStorage.getItem('salink_user_lat');
     const savedLng = localStorage.getItem('salink_user_lng');
     if (savedLat && savedLng) { userLat = parseFloat(savedLat); userLng = parseFloat(savedLng); }
@@ -4581,10 +4472,7 @@ document.addEventListener('DOMContentLoaded', async () => {
     initAllCharts();
     await loadData();
 
-    setTimeout(() => {
-        initAllCharts();
-        console.log('🔄 [Init] Charts re-rendered after loadData');
-    }, 800);
+    setTimeout(() => { initAllCharts(); }, 800);
 
     if (emergencyPollTimer) clearInterval(emergencyPollTimer);
     emergencyPollTimer = setInterval(async () => {
@@ -4598,25 +4486,16 @@ document.addEventListener('DOMContentLoaded', async () => {
         } catch(e) {}
     }, EMERGENCY_POLL_INTERVAL);
 
-    setInterval(() => {
-        renderHologram();
-        updateEmergencyBadges();
-    }, EMERGENCY_CLEANUP_INTERVAL);
+    setInterval(() => { renderHologram(); updateEmergencyBadges(); }, EMERGENCY_CLEANUP_INTERVAL);
 
     if (isPreviewMode) setTimeout(() => showPreviewOverlay(), 1200);
 
     setInterval(() => { if (!document.hidden) loadData(); }, AUTO_REFRESH);
-    setInterval(() => {
-        updateNotifBadge();
-        const nm = document.getElementById('notifModal');
-        if (nm && nm.classList.contains('active')) renderNotifList();
-    }, 15000);
 
     setInterval(() => {
         try {
             const usage = getStorageUsage();
             if (usage.percent > 80) {
-                console.warn('⚠️ [Auto-Cleanup] Storage >80% (' + usage.percent + '%), cleaning...');
                 const mediaStore = JSON.parse(localStorage.getItem('salink_post_media') || '{}');
                 const sevenDaysAgo = Date.now() - 7 * 24 * 60 * 60 * 1000;
                 let cleaned = 0;
@@ -4629,278 +4508,23 @@ document.addEventListener('DOMContentLoaded', async () => {
                 });
                 if (cleaned > 0) {
                     localStorage.setItem('salink_post_media', JSON.stringify(mediaStore));
-                    console.log('🧹 [Auto-Cleanup] Deleted', cleaned, 'old media entries');
                     showToast('🧹 Auto-Cleanup', cleaned + ' media lama dihapus', 'fa-broom');
                 }
             }
         } catch(e) {}
     }, 30000);
 
-    console.log('✅ SALINK Dashboard v7.0 Ready!');
-
-    setTimeout(() => {
-        try {
-            const mediaStore = JSON.parse(localStorage.getItem('salink_post_media') || '{}');
-            const allPosts = JSON.parse(localStorage.getItem('salink_posts') || '[]');
-            const activeMediaIds = new Set(allPosts.map(p => p.mediaId).filter(Boolean));
-
-            let deleted = 0;
-            Object.keys(mediaStore).forEach(mediaId => {
-                const ts = (mediaStore[mediaId] && mediaStore[mediaId].timestamp) || 0;
-                const isOld = (Date.now() - ts) > 30 * 24 * 60 * 60 * 1000;
-                if (!activeMediaIds.has(mediaId) || isOld) {
-                    delete mediaStore[mediaId];
-                    deleted++;
-                }
-            });
-
-            if (deleted > 0) {
-                localStorage.setItem('salink_post_media', JSON.stringify(mediaStore));
-                console.log('🧹 [Media Cleanup] Deleted', deleted, 'orphan/old media');
-            }
-        } catch(e) {}
-    }, 5000);
-});
-
-// ====================================================================
-// 40. CLEAR CACHE SYSTEM
-// ====================================================================
-function formatBytes(bytes) {
-    if (!bytes || bytes < 0) return '0 B';
-    if (bytes < 1024) return bytes + ' B';
-    if (bytes < 1024 * 1024) return (bytes / 1024).toFixed(1) + ' KB';
-    return (bytes / (1024 * 1024)).toFixed(2) + ' MB';
-}
-
-function getStorageUsage() {
-    let total = 0;
-    const breakdown = {};
-    try {
-        Object.keys(localStorage).forEach(key => {
-            const val = localStorage.getItem(key) || '';
-            const size = (key.length + val.length) * 2;
-            total += size;
-            breakdown[key] = size;
-        });
-    } catch(e) {}
-    const MAX = 5 * 1024 * 1024;
-    const percent = Math.min(100, Math.round((total / MAX) * 100));
-    return { total, breakdown, percent, max: MAX };
-}
-
-function getMediaStoreSize() {
-    try {
-        const raw = localStorage.getItem('salink_post_media') || '{}';
-        return raw.length * 2;
-    } catch(e) { return 0; }
-}
-
-function getOldDataSize() {
-    let size = 0;
-    try {
-        const mediaStore = JSON.parse(localStorage.getItem('salink_post_media') || '{}');
-        const sevenDaysAgo = Date.now() - 7 * 24 * 60 * 60 * 1000;
-        Object.keys(mediaStore).forEach(id => {
-            const entry = mediaStore[id];
-            if (entry && entry.timestamp && entry.timestamp < sevenDaysAgo) {
-                size += (entry.data || '').length * 2;
-            }
-        });
-        const notifs = JSON.parse(localStorage.getItem('salink_notifications') || '[]');
-        notifs.forEach(n => {
-            if (n && n.timestamp && n.timestamp < sevenDaysAgo) {
-                size += JSON.stringify(n).length * 2;
-            }
-        });
-    } catch(e) {}
-    return size;
-}
-
-function showClearCacheMenu() {
-    const modal = document.getElementById('clearCacheModal');
-    if (!modal) return;
-    updateClearCacheInfo();
-    modal.classList.add('active');
-    document.body.style.overflow = 'hidden';
-}
-
-function closeClearCacheModal() {
-    const modal = document.getElementById('clearCacheModal');
-    if (modal) modal.classList.remove('active');
-    document.body.style.overflow = '';
-}
-
-function updateClearCacheInfo() {
-    const usage = getStorageUsage();
-    const mediaSize = getMediaStoreSize();
-    const oldSize = getOldDataSize();
-
-    const bar = document.getElementById('ccStorageBar');
-    const pct = document.getElementById('ccStoragePercent');
-    const totalEl = document.getElementById('ccTotalSize');
-    const mediaEl = document.getElementById('ccMediaSize');
-    const oldEl = document.getElementById('ccOldSize');
-    const detailEl = document.getElementById('ccTotalDetail');
-    const headerInfo = document.getElementById('storageInfo');
-
-    if (bar) bar.style.width = usage.percent + '%';
-    if (pct) pct.textContent = usage.percent + '%';
-    if (totalEl) totalEl.textContent = 'Terpakai: ' + formatBytes(usage.total) + ' dari ~5 MB';
-    if (mediaEl) mediaEl.textContent = '📦 ' + formatBytes(mediaSize);
-    if (oldEl) oldEl.textContent = '📦 ' + formatBytes(oldSize);
-    if (detailEl) detailEl.textContent = '📦 ' + formatBytes(usage.total) + ' akan dihapus';
-    if (headerInfo) headerInfo.textContent = formatBytes(usage.total) + ' (' + usage.percent + '%)';
-}
-
-function showStorageDetail() {
-    const usage = getStorageUsage();
-    let detail = '📊 DETAIL PENYIMPANAN SALINK\n\n';
-    detail += 'Total: ' + formatBytes(usage.total) + '\n';
-    detail += 'Kapasitas: ~' + formatBytes(usage.max) + '\n';
-    detail += 'Terpakai: ' + usage.percent + '%\n\n';
-    detail += '─── RINCIAN ───\n';
-    const sorted = Object.keys(usage.breakdown).sort((a, b) => usage.breakdown[b] - usage.breakdown[a]);
-    sorted.forEach(key => {
-        const icon = key.indexOf('media') !== -1 ? '🖼️' :
-                     key.indexOf('posts') !== -1 ? '📝' :
-                     key.indexOf('emergenc') !== -1 ? '🚨' :
-                     key.indexOf('notif') !== -1 ? '🔔' :
-                     key.indexOf('user') !== -1 ? '👤' :
-                     key.indexOf('theme') !== -1 ? '🎨' :
-                     key.indexOf('read') !== -1 ? '✓' : '📦';
-        detail += icon + ' ' + key + ': ' + formatBytes(usage.breakdown[key]) + '\n';
-    });
-    alert(detail);
-}
-
-function clearMediaOnly() {
-    const size = getMediaStoreSize();
-    if (size === 0) {
-        showToast('ℹ️ Info', 'Tidak ada media yang perlu dibersihkan', 'fa-info-circle');
-        return;
-    }
-    if (!confirm('🖼️ Bersihkan Media\n\nAkan menghapus ' + formatBytes(size) + ' cache foto/video.\n\nAkun & postingan Anda TETAP AMAN.\n\nLanjutkan?')) return;
-
-    try {
-        localStorage.removeItem('salink_post_media');
-        showToast('✅ Sukses', 'Media dibersihkan (' + formatBytes(size) + ' dihemat)', 'fa-check-circle');
-        updateClearCacheInfo();
-        setTimeout(() => location.reload(), 1200);
-    } catch(e) {
-        showToast('⚠️ Gagal', 'Error: ' + e.message, 'fa-exclamation-triangle');
-    }
-}
-
-function clearOldData() {
-    const size = getOldDataSize();
-    if (size === 0) {
-        showToast('ℹ️ Info', 'Tidak ada data lama', 'fa-info-circle');
-        return;
-    }
-    if (!confirm('⏱️ Bersihkan Data Lama\n\nAkan menghapus ' + formatBytes(size) + ' data >7 hari:\n• Media lama\n• Notifikasi lama\n• Emergency kadaluarsa\n\nLogin Anda TETAP AKTIF.\n\nLanjutkan?')) return;
-
-    try {
-        const sevenDaysAgo = Date.now() - 7 * 24 * 60 * 60 * 1000;
-
-        const mediaStore = JSON.parse(localStorage.getItem('salink_post_media') || '{}');
-        Object.keys(mediaStore).forEach(id => {
-            const entry = mediaStore[id];
-            if (entry && entry.timestamp && entry.timestamp < sevenDaysAgo) {
-                delete mediaStore[id];
-            }
-        });
-        localStorage.setItem('salink_post_media', JSON.stringify(mediaStore));
-
-        let notifs = JSON.parse(localStorage.getItem('salink_notifications') || '[]');
-        notifs = notifs.filter(n => n && n.timestamp && n.timestamp >= sevenDaysAgo);
-        localStorage.setItem('salink_notifications', JSON.stringify(notifs));
-
-        let ems = JSON.parse(localStorage.getItem('salink_emergencies') || '[]');
-        const now = Date.now();
-        ems = ems.filter(e => {
-            if (!e) return false;
-            let ts = typeof e.timestamp === 'number' ? e.timestamp : new Date(e.timestamp).getTime();
-            if (isNaN(ts)) ts = now;
-            const exp = e.expiresAt || (ts + EMERGENCY_DURATION);
-            return exp > now;
-        });
-        localStorage.setItem('salink_emergencies', JSON.stringify(ems));
-
-        try {
-            const readN = JSON.parse(localStorage.getItem('salink_read_notifs') || '{}');
-            const cleanedRead = {};
-            Object.keys(readN).forEach(k => {
-                if (readN[k] && (Date.now() - readN[k]) < sevenDaysAgo) {
-                    cleanedRead[k] = readN[k];
-                }
-            });
-            localStorage.setItem('salink_read_notifs', JSON.stringify(cleanedRead));
-        } catch(e) {}
-
-        try {
-            const dism = JSON.parse(localStorage.getItem('salink_dismissed_emergencies') || '{}');
-            const cleanedDism = {};
-            Object.keys(dism).forEach(k => {
-                if (dism[k] && (Date.now() - dism[k]) < sevenDaysAgo) {
-                    cleanedDism[k] = dism[k];
-                }
-            });
-            localStorage.setItem('salink_dismissed_emergencies', JSON.stringify(cleanedDism));
-        } catch(e) {}
-
-        showToast('✅ Sukses', 'Data lama dibersihkan (' + formatBytes(size) + ' dihemat)', 'fa-check-circle');
-        updateClearCacheInfo();
-        setTimeout(() => location.reload(), 1200);
-    } catch(e) {
-        showToast('⚠️ Gagal', 'Error: ' + e.message, 'fa-exclamation-triangle');
-    }
-}
-
-async function forceSyncData() {
-    if (!confirm('🔄 Sinkronisasi Ulang\n\nAmbil data terbaru dari server?\n\nTidak ada data lokal yang dihapus.')) return;
-    showToast('🔄 Sync...', 'Mengambil data terbaru dari server', 'fa-sync-alt');
-    try {
-        await loadData();
-        showToast('✅ Sukses', 'Data berhasil disinkronkan', 'fa-check-circle');
-        updateClearCacheInfo();
-    } catch(e) {
-        showToast('⚠️ Gagal', 'Sync error: ' + e.message, 'fa-exclamation-triangle');
-    }
-}
-
-function clearAllCache() {
-    const usage = getStorageUsage();
-    if (!confirm('⚠️ RESET TOTAL ⚠️\n\nAnda akan menghapus ' + formatBytes(usage.total) + ' data:\n\n✅ Akun (login ulang)\n✅ Semua postingan\n✅ Semua emergency\n✅ Semua media\n✅ Theme & preferensi\n\n⚠️ TINDAKAN INI TIDAK BISA DIBATALKAN!\n\nLanjutkan?')) return;
-
-    if (!confirm('🛑 KONFIRMASI KEDUA 🛑\n\nYakin ingin HAPUS SEMUA?\n\nAnda harus LOGIN ULANG setelah ini.')) return;
-
-    try {
-        localStorage.clear();
-        showToast('✅ Sukses', 'Semua data dihapus. Reload...', 'fa-check-circle');
+    document.addEventListener('DOMContentLoaded', () => {
         setTimeout(() => {
-            window.location.href = 'login-register.html';
-        }, 1500);
-    } catch(e) {
-        showToast('⚠️ Gagal', 'Error: ' + e.message, 'fa-exclamation-triangle');
-    }
-}
+            const headerInfo = document.getElementById('storageInfo');
+            if (headerInfo) {
+                const usage = getStorageUsage();
+                headerInfo.textContent = formatBytes(usage.total) + ' (' + usage.percent + '%)';
+            }
+        }, 2000);
+    });
 
-window.showClearCacheMenu = showClearCacheMenu;
-window.closeClearCacheModal = closeClearCacheModal;
-window.showStorageDetail = showStorageDetail;
-window.clearMediaOnly = clearMediaOnly;
-window.clearOldData = clearOldData;
-window.forceSyncData = forceSyncData;
-window.clearAllCache = clearAllCache;
-
-document.addEventListener('DOMContentLoaded', () => {
-    setTimeout(() => {
-        const headerInfo = document.getElementById('storageInfo');
-        if (headerInfo) {
-            const usage = getStorageUsage();
-            headerInfo.textContent = formatBytes(usage.total) + ' (' + usage.percent + '%)';
-        }
-    }, 2000);
+    console.log('✅ SALINK Dashboard v9.0 Ready!');
 });
 
 // ====================================================================
@@ -4939,13 +4563,13 @@ window.clearRecentSearches = clearRecentSearches;
 window.goToUser = goToUser;
 window.goToPost = goToPost;
 window.goToEmergency = goToEmergency;
-window.openEmergencyDetail = openEmergencyDetail;
 window.ambilLokasiSaya = ambilLokasiSaya;
 window.uploadToGDrive = uploadToGDrive;
 window.deleteFromGDrive = deleteFromGDrive;
 
-console.log('✅ SALINK Dashboard v7.0 Script Loaded — FINAL FIX');
+console.log('✅ SALINK Dashboard v9.0 Script Loaded — FINAL CLEAN');
     </script>
+   
     <!-- ============================================================ -->
     <!-- FCM SETUP SALINK + EMERGENCY ALERT                            -->
     <!-- ============================================================ -->
